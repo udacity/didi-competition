@@ -1,0 +1,1 @@
+These files represent the sensor placement on the Udacity self-driving car. The ```mkz.urdf.xacro``` file was retrieved from the [Dataspeed Bitbucket repo](https://bitbucket.org/DataspeedInc/dbw_mkz_ros/src/0ee2d85ecbe1/dbw_mkz_description/?at=default) and modified for our sensor suite. You can find the meshes for the wheels and the vehicle itself on that website.
