@@ -293,8 +293,8 @@ def main():
               (stats_acc['img_count'], stats_acc['msg_count']))
         sys.stdout.flush()
 
+        camera_df = pd.DataFrame(data=camera_dict, columns=camera_cols)
         if include_images:
-            camera_df = pd.DataFrame(data=camera_dict, columns=camera_cols)
             camera_df.to_csv(os.path.join(dataset_outdir, 'capture_vehicle_camera.csv'), index=False)
 
         cap_rear_gps_df = pd.DataFrame(data=cap_rear_gps_dict, columns=gps_cols)
