@@ -1,6 +1,6 @@
 # Tracklet Scripts
 
-This folder contains scripts to create KITTI Tracklet files from rosbag capture data and evaluate Tracklet files.
+This folder contains scripts to create KITTI Tracklet files from rosbag capture data and evaluate Tracklet files. This code will not work on the first dataset release without modification, as the topic names have changed as indicated in the first dataset README.
 
 ## Installation
 
