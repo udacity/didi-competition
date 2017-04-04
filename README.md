@@ -2,7 +2,7 @@
 
 The repository holds the data required for getting started with the Udacity/Didi self-driving car challenge. To generate tracklets (annotation data) from the released datasets, check out the Docker code in the ```/tracklet``` folder. For sensor transform information, check out ```/mkz-description```. 
 
-Please note that tracklets cannot be generated without modifying this code, as we added an additional RTK GPS receiver onto the capture vehicle in order to determine orientation.
+Please note that tracklets cannot be generated without modifying this code, as we added an additional RTK GPS receiver onto the capture vehicle in order to determine orientation. The orientation determination to enable world to capture vehicle transformations is currently being written, with a release target for 4/4/2017 EOD.
 
 ## Datasets
 Here are links to the datasets we've released specifically for this challenge:
