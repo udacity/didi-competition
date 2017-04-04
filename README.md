@@ -1,8 +1,14 @@
-<img src="images/urdf.png" alt="MKZ Model" width="800px">
+<img src="images/urdf.png" alt="MKZ Model" width="800px"></img>
 
-The repository holds the data required for getting started with the Udacity/Didi self-driving car challenge. To generate tracklets (annotation data) from the released datasets, check out the Docker code in the ```/tracklet/``` folder. For sensor transform information, check out ```mkz-description```. 
+The repository holds the data required for getting started with the Udacity/Didi self-driving car challenge. To generate tracklets (annotation data) from the released datasets, check out the Docker code in the ```/tracklet``` folder. For sensor transform information, check out ```/mkz-description```. 
 
 Please note that tracklets cannot be generated without modifying this code, as we added an additional RTK GPS receiver onto the capture vehicle in order to determine orientation.
+
+## Datasets
+Here are links to the datasets we've released specifically for this challenge:
+* [**Dataset 2**](http://academictorrents.com/details/18d7f6be647eb6d581f5ff61819a11b9c21769c7) – Three different vehicles with a variety of maneuvers, and the Round 1 test seuence. Larger image sizes and two GPS RTK units on the capture vehicle for orientation determination. Velodyne points have been removed to reduce size, so a Velodyne LIDAR driver msut be run during bag playback.
+* [**Dataset 1**](http://academictorrents.com/details/76352487923a31d47a6029ddebf40d9265e770b5) – NOT SUITABLE FOR TRACKLET GENERATION. Dataset intended for particpants to become familiar with the sensor data format and ROS in general. Tracklet code must be modified to work on this dataset, and no capture vehicle orientation is available unless using Course-Over-Ground techniques.
+
 
 ## Resources
 Here's a list of the projects we've open sourced already that may be helpful:
