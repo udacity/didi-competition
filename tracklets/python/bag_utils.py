@@ -13,6 +13,7 @@ import cv2
 import yaml
 import rosbag
 import datetime
+import pandas as pd
 
 
 SEC_PER_NANOSEC = 1e9
@@ -64,14 +65,24 @@ JOIN_THRESH_NS = 10 * MIN_PER_NANOSEC
 
 class BagSet(object):
 
-    def __init__(self, name, bagfiles, filter_topics):
+    def __init__(self, name, bagfiles, filter_topics, metadata_path=''):
         self.name = name
         self.files = sorted(bagfiles)
         self.infos = []
         self.topic_map = defaultdict(list)
         self.start_time = None
         self.end_time = None
+        self.metadata = []  # metadata will be in a list of records, each record (row) a dict of col->values
+        if metadata_path:
+            if os.path.exists(metadata_path):
+                self._load_metadata(metadata_path)
+            else:
+                print('Warning: Metadata filename %s specified but not found' % metadata_path)
         self._process_infos(filter_topics)
+
+    def _load_metadata(self, metadata_path):
+        metadata_df = pd.read_csv(metadata_path, header=0, index_col=None, quotechar="'")
+        self.metadata = metadata_df.to_dict(orient='records')
 
     def _process_infos(self, filter_topics):
         for f in self.files:
@@ -134,8 +145,14 @@ class BagSet(object):
         return "start: %s, end: %s, topic_map: %s" % (self.start_time, self.end_time, str(self.topic_map))
 
 
-def find_bagsets(directory, filter_topics=[], pattern="*.bag", set_per_file=False):
+def find_bagsets(
+        directory,
+        filter_topics=[],
+        pattern="*.bag",
+        set_per_file=False,
+        metadata_filename=''):
     sets = []
+    metadata_path = ''
     for root, dirs, files in os.walk(directory):
         matched_files = []
         #print(files)
@@ -143,15 +160,17 @@ def find_bagsets(directory, filter_topics=[], pattern="*.bag", set_per_file=Fals
             if fnmatch.fnmatch(basename, pattern):
                 filename = os.path.join(root, basename)
                 matched_files.append(filename)
+            if metadata_filename and basename == metadata_filename:
+                metadata_path = os.path.join(root, metadata_filename)
         if matched_files:
             if set_per_file:
                 for f in matched_files:
                     set_name = os.path.splitext(os.path.basename(f))[0]
-                    bag_set = BagSet(set_name, [f], filter_topics)
+                    bag_set = BagSet(set_name, [f], filter_topics, metadata_path)
                     sets.append(bag_set)
             else:
                 set_name = os.path.relpath(root, directory)
-                bag_set = BagSet(set_name, matched_files, filter_topics)
+                bag_set = BagSet(set_name, matched_files, filter_topics, metadata_path)
                 sets.append(bag_set)
     return sets
 
