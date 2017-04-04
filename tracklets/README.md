@@ -36,3 +36,32 @@ Usage is straightforward. Run the script as per
     python evaluate_tracklets.py predicted_tracklet.xml ground_truth_tracklet.xml -o /output/metrics
     
 If you don't want metrics output as csv files omit the -o argument.
+
+## Metrics and Scoring
+
+The Tracklet evaluation script currently produces two sets of metrics -- Intersection-over-union calculated on bounding box volumes, and precision and recall for detections evaluated at specific IOU thresholds. A description of each follows. 
+
+For competition scoring, only the IOU metric for 'All' object types relevant to the round being scored will be used. This value can be extracted from the YAML encoded results output to stdout:
+
+    iou_per_obj:
+        All: <value>
+
+If metric file output is enabled with the '-o' option, the score can alternatively be extracted from the row with object_type = 'All' in the 'iou_per_obj.csv' file.
+
+### IOU Per Object Type
+
+This is a volume based intersection over union metric. The intersection is the overlapping volume of prediction bounding boxes with ground truth bounding boxes. The union is the combined volume of predicted and ground truth boxes. The IOU is equivalent to TP/(TP + FP + FN) where
+ * True positives = correctly predicted volume that overlaps ground truth
+ * False positives = incorrectly predicted volume that does not overlap ground truth
+ * False negatives = ground truth volume not overlapped by any predictions
+
+For this implementation, all of the intersection and union volumes are added up across all frames for each object type and then the ratio is calculated on the summed volumes. For the 'All' field, the scores across all relevant object types are averaged.
+
+It should be noted that predictions are matched with ground truth boxes of the same object type based on the largest overlap and then neither are matched again in that frame. Unmatched predictions overlapping a ground truth box that's already been matched will be considered false positives. Unmatched ground truth volumes that overlap with predictions better matched with another ground truth will be considered false negatives.  
+
+
+### Detection Precision and Recall at IOU
+
+In addition to the IOU score, the evaluation script also outputs a set of precision and recall values for detections at different IOU thresholds. A detection, true positive, occurs when a predicted volume overlaps a ground truth volume of the same object type with an IOU value greater than the threshold IOU.
+
+This metric is not used in scoring.
