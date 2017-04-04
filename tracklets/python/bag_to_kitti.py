@@ -135,6 +135,34 @@ def interpolate_to_camera(camera_df, other_dfs, filter_cols=[]):
     return filtered
 
 
+def estimate_obstacle_poses(
+    cap_front_rtk,
+    cap_front_gps_offset,
+    cap_rear_rtk,
+    cap_rear_gps_offset,
+    obs_rear_rtk,
+    obs_rear_gps_offset,  # offset along [l, w, h] dim of car
+):
+    # offsets are all [l, w, h] lists (or tuples)
+    assert(len(cap_front_gps_offset) == 3)
+    assert(len(cap_rear_gps_offset) == 3)
+    assert(len(obs_rear_gps_offset) == 3)
+    # all coordinate records should be interpolated to same sample base at this point
+    assert len(cap_front_rtk) == len(cap_rear_rtk) == len(obs_rear_rtk)
+
+    rtk_coords = zip(cap_front_rtk, cap_rear_rtk, obs_rear_rtk)
+    output_poses = []
+    for c in rtk_coords:
+        # FIXME currently just passing obstacle pose through, this is not valid.
+        # Capture vehicle front + rear coordinates and GPS offset values must be
+        # used to calculate a position and orientation of the obstacle relative
+        # to the body frame of the capture vehicle.
+        output_poses.append(c[2])
+
+    # Tracklet gen (consumer of these poses) is expecting list of dicts with tx,ty,tz,rx,ry,rz keys
+    return output_poses
+
+
 def main():
     parser = argparse.ArgumentParser(description='Convert rosbag to images and csv.')
     parser.add_argument('-o', '--outdir', type=str, nargs='?', default='/output',
@@ -191,8 +219,6 @@ def main():
     for bs in bagsets:
         print("Processing set %s" % bs.name)
         sys.stdout.flush()
-
-        print(bs.metadata)
 
         camera_cols = ["timestamp", "width", "height", "frame_id", "filename"]
         camera_dict = defaultdict(list)
@@ -309,10 +335,12 @@ def main():
             cap_rear_rtk_interp = interpolate_to_camera(camera_index_df, cap_rear_rtk_df, filter_cols=rtk_cols)
             cap_rear_rtk_interp.to_csv(
                 os.path.join(dataset_outdir, 'capture_vehicle_rear_rtk_interp.csv'), header=True)
+            cap_rear_rtk_interp_rec = cap_rear_rtk_interp.to_dict(orient='records')
 
             cap_front_rtk_interp = interpolate_to_camera(camera_index_df, cap_front_rtk_df, filter_cols=rtk_cols)
             cap_front_rtk_interp.to_csv(
                 os.path.join(dataset_outdir, 'capture_vehicle_front_rtk_interp.csv'), header=True)
+            cap_front_rtk_interp_rec = cap_front_rtk_interp.to_dict(orient='records')
 
             collection = TrackletCollection()
             for obs_topic in obstacle_rtk_dicts.keys():
@@ -331,10 +359,16 @@ def main():
                 obs_tracklet = Tracklet(
                     object_type=mdr['object_type'], l=mdr['l'], w=mdr['w'], h=mdr['h'], first_frame=0)
 
-                # FIXME processing needs to be done on poses to extract proper orientations and convert
-                #NED to capture vehicle body frame relative coordinates
+                # Convert NED RTK coords of obstacle to capture vehicle body frame relative coordinates
+                obs_tracklet.poses = estimate_obstacle_poses(
+                    cap_front_rtk=cap_rear_rtk_interp_rec,
+                    cap_front_gps_offset=[0.0, 0.0, 0.0],  # FIXME need this value
+                    cap_rear_rtk=cap_front_rtk_interp_rec,
+                    cap_rear_gps_offset=[0.0, 0.0, 0.0],  # FIXME need this value
+                    obs_rear_rtk=obs_interp.to_dict(orient='records'),
+                    obs_rear_gps_offset=[mdr['gps_l'], mdr['gps_w'], mdr['gps_h']],
+                )
 
-                obs_tracklet.poses = obs_interp.to_dict(orient='records')
                 collection.tracklets.append(obs_tracklet)
 
             tracklet_path = os.path.join(dataset_outdir, 'tracklet_labels.xml')
