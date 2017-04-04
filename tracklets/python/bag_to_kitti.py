@@ -32,16 +32,8 @@ def obs_prefix_from_topic(topic):
     words = topic.split('/')
     start, end = (1, 4) if topic.startswith(OBJECTS_TOPIC_ROOT) else (1, 3)
     prefix = '_'.join(words[start:end])
-    return prefix
-
-
-def obs_name_from_topic(topic):
-    print(topic.split('/'))
-    if topic.startswith(OBJECTS_TOPIC_ROOT):
-        print('blah')
-        return topic.split('/')[2]
-    else:
-        return topic.split('/')[1]
+    name = words[2] if topic.startswith(OBJECTS_TOPIC_ROOT) else words[1]
+    return prefix, name
 
 
 def check_format(data):
@@ -143,6 +135,34 @@ def interpolate_to_camera(camera_df, other_dfs, filter_cols=[]):
     return filtered
 
 
+def estimate_obstacle_poses(
+    cap_front_rtk,
+    cap_front_gps_offset,
+    cap_rear_rtk,
+    cap_rear_gps_offset,
+    obs_rear_rtk,
+    obs_rear_gps_offset,  # offset along [l, w, h] dim of car
+):
+    # offsets are all [l, w, h] lists (or tuples)
+    assert(len(cap_front_gps_offset) == 3)
+    assert(len(cap_rear_gps_offset) == 3)
+    assert(len(obs_rear_gps_offset) == 3)
+    # all coordinate records should be interpolated to same sample base at this point
+    assert len(cap_front_rtk) == len(cap_rear_rtk) == len(obs_rear_rtk)
+
+    rtk_coords = zip(cap_front_rtk, cap_rear_rtk, obs_rear_rtk)
+    output_poses = []
+    for c in rtk_coords:
+        # FIXME currently just passing obstacle pose through, this is not valid.
+        # Capture vehicle front + rear coordinates and GPS offset values must be
+        # used to calculate a position and orientation of the obstacle relative
+        # to the body frame of the capture vehicle.
+        output_poses.append(c[2])
+
+    # Tracklet gen (consumer of these poses) is expecting list of dicts with tx,ty,tz,rx,ry,rz keys
+    return output_poses
+
+
 def main():
     parser = argparse.ArgumentParser(description='Convert rosbag to images and csv.')
     parser.add_argument('-o', '--outdir', type=str, nargs='?', default='/output',
@@ -174,12 +194,24 @@ def main():
         filter_topics = CAMERA_TOPICS + [
             CAP_FRONT_GPS_TOPIC, CAP_REAR_GPS_TOPIC, CAP_FRONT_RTK_TOPIC, CAP_REAR_RTK_TOPIC]
 
-    #FIXME scan from bag in /obstacles/ path
+    # For bag sets that may have missing metadata.csv file
+    default_metadata = [{
+        'obstacle_name': 'obs1',
+        'object_type': 'Car',
+        'gps_l': 2.032,
+        'gps_w': 1.4478,
+        'gps_h': 1.6256,
+        'l': 4.2418,
+        'w': 1.4478,
+        'h': 1.5748,
+    }]
+
+    #FIXME scan from bag info in /obstacles/ topic path
     OBSTACLES = ['obs1']
     OBSTACLE_RTK_TOPICS = [OBJECTS_TOPIC_ROOT + '/' + x + '/rear/gps/rtkfix' for x in OBSTACLES]
     filter_topics += OBSTACLE_RTK_TOPICS
 
-    bagsets = find_bagsets(indir, filter_topics=filter_topics, set_per_file=True)
+    bagsets = find_bagsets(indir, filter_topics=filter_topics, set_per_file=True, metadata_filename='metadata.csv')
     if not bagsets:
         print("No bags found in %s" % indir)
         exit(-1)
@@ -261,8 +293,8 @@ def main():
               (stats_acc['img_count'], stats_acc['msg_count']))
         sys.stdout.flush()
 
+        camera_df = pd.DataFrame(data=camera_dict, columns=camera_cols)
         if include_images:
-            camera_df = pd.DataFrame(data=camera_dict, columns=camera_cols)
             camera_df.to_csv(os.path.join(dataset_outdir, 'capture_vehicle_camera.csv'), index=False)
 
         cap_rear_gps_df = pd.DataFrame(data=cap_rear_gps_dict, columns=gps_cols)
@@ -279,7 +311,7 @@ def main():
 
         obs_rtk_df_dict = {}
         for obs_topic, obs_rtk_dict in obstacle_rtk_dicts.items():
-            obs_prefix = obs_prefix_from_topic(obs_topic)
+            obs_prefix, _ = obs_prefix_from_topic(obs_topic)
             obs_rtk_df = pd.DataFrame(data=obs_rtk_dict, columns=rtk_cols)
             obs_rtk_df.to_csv(os.path.join(dataset_outdir, '%s_rtk.csv' % obs_prefix), index=False)
             obs_rtk_df_dict[obs_topic] = obs_rtk_df
@@ -303,26 +335,40 @@ def main():
             cap_rear_rtk_interp = interpolate_to_camera(camera_index_df, cap_rear_rtk_df, filter_cols=rtk_cols)
             cap_rear_rtk_interp.to_csv(
                 os.path.join(dataset_outdir, 'capture_vehicle_rear_rtk_interp.csv'), header=True)
+            cap_rear_rtk_interp_rec = cap_rear_rtk_interp.to_dict(orient='records')
 
             cap_front_rtk_interp = interpolate_to_camera(camera_index_df, cap_front_rtk_df, filter_cols=rtk_cols)
             cap_front_rtk_interp.to_csv(
                 os.path.join(dataset_outdir, 'capture_vehicle_front_rtk_interp.csv'), header=True)
+            cap_front_rtk_interp_rec = cap_front_rtk_interp.to_dict(orient='records')
 
             collection = TrackletCollection()
             for obs_topic in obstacle_rtk_dicts.keys():
                 obs_rtk_df = obs_rtk_df_dict[obs_topic]
                 obs_interp = interpolate_to_camera(camera_index_df, obs_rtk_df, filter_cols=rtk_cols)
-                obs_prefix = obs_prefix_from_topic(obs_topic)
+                obs_prefix, obs_name = obs_prefix_from_topic(obs_topic)
                 obs_interp.to_csv(
                     os.path.join(dataset_outdir, '%s_rtk_interpolated.csv' % obs_prefix), header=True)
 
-                # FIXME lwh and object type needs to be extracted from a per obstacle CSV mapping file
-                obs_tracklet = Tracklet(object_type='Car', l=4.0, w=1.5, h=1.0)
+                # Extract lwh and object type from CSV metadata mapping file
+                md = bs.metadata if bs.metadata else default_metadata
+                for x in md:
+                    if x['obstacle_name'] == obs_name:
+                        mdr = x
 
-                # FIXME processing needs to be done on poses to extract proper orientations and convert
-                #NED to capture vehicle body frame relative coordinates
+                obs_tracklet = Tracklet(
+                    object_type=mdr['object_type'], l=mdr['l'], w=mdr['w'], h=mdr['h'], first_frame=0)
 
-                obs_tracklet.poses = obs_interp.to_dict(orient='records')
+                # Convert NED RTK coords of obstacle to capture vehicle body frame relative coordinates
+                obs_tracklet.poses = estimate_obstacle_poses(
+                    cap_front_rtk=cap_rear_rtk_interp_rec,
+                    cap_front_gps_offset=[0.0, 0.0, 0.0],  # FIXME need this value
+                    cap_rear_rtk=cap_front_rtk_interp_rec,
+                    cap_rear_gps_offset=[0.0, 0.0, 0.0],  # FIXME need this value
+                    obs_rear_rtk=obs_interp.to_dict(orient='records'),
+                    obs_rear_gps_offset=[mdr['gps_l'], mdr['gps_w'], mdr['gps_h']],
+                )
+
                 collection.tracklets.append(obs_tracklet)
 
             tracklet_path = os.path.join(dataset_outdir, 'tracklet_labels.xml')
