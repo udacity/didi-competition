@@ -6,7 +6,7 @@ Please note that tracklets cannot be generated for Dataset 1 without modifying t
 
 ## Datasets
 Here are links to the datasets we've released specifically for this challenge:
-* [**Dataset 2**](http://academictorrents.com/details/18d7f6be647eb6d581f5ff61819a11b9c21769c7) – Three different vehicles with a variety of maneuvers, and the Round 1 test seuence. Larger image sizes and two GPS RTK units on the capture vehicle for orientation determination. Velodyne points have been removed to reduce size, so a Velodyne LIDAR driver msut be run during bag playback.
+* [**Dataset 2**](http://academictorrents.com/details/18d7f6be647eb6d581f5ff61819a11b9c21769c7) – Three different vehicles with a variety of maneuvers, and the Round 1 test seuence. Larger image sizes and two GPS RTK units on the capture vehicle for orientation determination. Velodyne points have been removed to reduce size, so a Velodyne LIDAR driver must be run during bag playback.
 * [**Dataset 1**](http://academictorrents.com/details/76352487923a31d47a6029ddebf40d9265e770b5) – NOT SUITABLE FOR TRACKLET GENERATION. Dataset intended for particpants to become familiar with the sensor data format and ROS in general. Tracklet code must be modified to work on this dataset, and no capture vehicle orientation is available unless using Course-Over-Ground techniques.
 
 
