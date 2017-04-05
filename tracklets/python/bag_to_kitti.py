@@ -297,16 +297,16 @@ def main():
         if include_images:
             camera_df.to_csv(os.path.join(dataset_outdir, 'capture_vehicle_camera.csv'), index=False)
 
-        cap_rear_gps_df = pd.DataFrame(data=cap_rear_gps_dict, columns=gps_cols)
+        cap_rear_gps_df = pd.DataFrame(data=cap_rear_gps_dict, columns=gps_cols).astype(float)
         cap_rear_gps_df.to_csv(os.path.join(dataset_outdir, 'capture_vehicle_rear_gps.csv'), index=False)
 
-        cap_front_gps_df = pd.DataFrame(data=cap_front_gps_dict, columns=gps_cols)
+        cap_front_gps_df = pd.DataFrame(data=cap_front_gps_dict, columns=gps_cols).astype(float)
         cap_front_gps_df.to_csv(os.path.join(dataset_outdir, 'capture_vehicle_front_gps.csv'), index=False)
 
-        cap_rear_rtk_df = pd.DataFrame(data=cap_rear_rtk_dict, columns=rtk_cols)
+        cap_rear_rtk_df = pd.DataFrame(data=cap_rear_rtk_dict, columns=rtk_cols).astype(float)
         cap_rear_rtk_df.to_csv(os.path.join(dataset_outdir, 'capture_vehicle_rear_rtk.csv'), index=False)
 
-        cap_front_rtk_df = pd.DataFrame(data=cap_front_rtk_dict, columns=rtk_cols)
+        cap_front_rtk_df = pd.DataFrame(data=cap_front_rtk_dict, columns=rtk_cols).astype(float)
         cap_front_rtk_df.to_csv(os.path.join(dataset_outdir, 'capture_vehicle_front_rtk.csv'), index=False)
 
         obs_rtk_df_dict = {}
@@ -322,7 +322,7 @@ def main():
             camera_df.set_index(['timestamp'], inplace=True)
             camera_df.index.rename('index', inplace=True)
 
-            camera_index_df = pd.DataFrame(index=camera_df.index)
+            camera_index_df = pd.DataFrame(index=camera_df.index).astype(float)
 
             cap_rear_gps_interp = interpolate_to_camera(camera_index_df, cap_rear_gps_df, filter_cols=gps_cols)
             cap_rear_gps_interp.to_csv(
