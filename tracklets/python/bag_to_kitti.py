@@ -8,14 +8,17 @@ from collections import defaultdict
 import os
 import sys
 import cv2
+import math
 import imghdr
 import argparse
 import functools
+import matplotlib
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import PyKDL as kd
 
-define_old_topics = True
 from bag_topic_def import *
 from bag_utils import *
 from generate_tracklet import *
@@ -78,8 +81,6 @@ def camera2dict(msg, write_results, camera_dict):
 
 def gps2dict(msg, gps_dict):
     gps_dict["timestamp"].append(msg.header.stamp.to_nsec())
-    #gps_dict["status"].append(msg.status.status)
-    #gps_dict["service"].append(msg.status.service)
     gps_dict["lat"].append(msg.latitude)
     gps_dict["long"].append(msg.longitude)
     gps_dict["alt"].append(msg.altitude)
@@ -345,6 +346,18 @@ def main():
                 obs_prefix, obs_name = obs_prefix_from_topic(obs_topic)
                 obs_interp.to_csv(
                     os.path.join(dataset_outdir, '%s_rtk_interpolated.csv' % obs_prefix), header=True)
+
+                # Plot obstacle and front/rear rtk paths in absolute RTK ENU coords
+                fig = plt.figure()
+                plt.plot(
+                    obs_interp['tx'].tolist(),
+                    obs_interp['ty'].tolist(),
+                    cap_front_rtk_interp['tx'].tolist(),
+                    cap_front_rtk_interp['ty'].tolist(),
+                    cap_rear_rtk_interp['tx'].tolist(),
+                    cap_rear_rtk_interp['ty'].tolist())
+                fig.savefig(os.path.join(dataset_outdir, '%s-%s-plot.png' % (bs.name, obs_name)))
+                plt.close(fig)
 
                 # Extract lwh and object type from CSV metadata mapping file
                 md = bs.metadata if bs.metadata else default_metadata
