@@ -187,12 +187,8 @@ def main():
 
     include_images = False if msg_only else True
 
-    use_old_topics = False
-    if use_old_topics:
-        filter_topics = CAMERA_TOPICS + [OLD_RTK_TOPIC]
-    else:
-        filter_topics = CAMERA_TOPICS + [
-            CAP_FRONT_GPS_TOPIC, CAP_REAR_GPS_TOPIC, CAP_FRONT_RTK_TOPIC, CAP_REAR_RTK_TOPIC]
+    filter_topics = CAMERA_TOPICS + CAP_FRONT_RTK_TOPICS + CAP_REAR_RTK_TOPICS \
+        + CAP_FRONT_GPS_TOPICS + CAP_REAR_GPS_TOPICS
 
     # For bag sets that may have missing metadata.csv file
     default_metadata = [{
@@ -257,19 +253,19 @@ def main():
                 stats['img_count'] += 1
                 stats['msg_count'] += 1
 
-            elif topic == CAP_REAR_RTK_TOPIC:
+            elif topic in CAP_REAR_RTK_TOPICS:
                 rtk2dict(msg, cap_rear_rtk_dict)
                 stats['msg_count'] += 1
 
-            elif topic == CAP_FRONT_RTK_TOPIC:
+            elif topic in CAP_FRONT_RTK_TOPICS:
                 rtk2dict(msg, cap_front_rtk_dict)
                 stats['msg_count'] += 1
 
-            elif topic == CAP_REAR_GPS_TOPIC:
+            elif topic in CAP_REAR_GPS_TOPICS:
                 gps2dict(msg, cap_rear_gps_dict)
                 stats['msg_count'] += 1
 
-            elif topic == CAP_FRONT_GPS_TOPIC:
+            elif topic in CAP_FRONT_GPS_TOPICS:
                 gps2dict(msg, cap_front_gps_dict)
                 stats['msg_count'] += 1
 
