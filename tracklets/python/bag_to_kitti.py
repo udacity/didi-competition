@@ -108,6 +108,48 @@ def imu2dict(msg, imu_dict):
     imu_dict["ay"].append(msg.linear_acceleration.y)
     imu_dict["az"].append(msg.linear_acceleration.z)
 
+velodyne_to_front = {
+   'tx': -1.0922,
+   'ty': 0.,
+   'tz': -0.0508,
+   'rx': 0.,
+   'ry': 0.,
+   'rz': 0.,
+   'rw': 1.
+}
+
+
+def get_yaw(p1, p2):
+    if abs(p1[0] - p2[0]) < 1e-2:
+        return 0.
+    return math.atan2(p1[1] - p2[1], p1[0] - p2[0])
+
+
+def dict_to_vect(di):
+    return kd.Vector(di['tx'], di['ty'], di['tz'])
+
+
+def frame_to_dict(frame):
+    r, p, y = frame.M.GetRPY()
+    return dict(tx=frame.p[0], ty=frame.p[1], tz=frame.p[2], rx=r, ry=p, rz=y)
+
+
+def get_obstacle_pos(front, rear, obstacle, velodyne_to_front=velodyne_to_front):
+    front_v = dict_to_vect(front)
+    rear_v = dict_to_vect(rear)
+    obs_v = dict_to_vect(obstacle)
+
+    yaw = get_yaw(front_v, rear_v)
+    rot_z = kd.Rotation.RotZ(-yaw)
+
+    diff = obs_v - front_v
+    res = rot_z * diff
+    res = res + dict_to_vect(velodyne_to_front)
+
+    #FIXME observer centroid translation still required
+
+    return frame_to_dict(kd.Frame(kd.Rotation(), res))
+
 
 def interpolate_to_camera(camera_df, other_dfs, filter_cols=[]):
     if not isinstance(other_dfs, list):
@@ -138,29 +180,22 @@ def interpolate_to_camera(camera_df, other_dfs, filter_cols=[]):
 
 def estimate_obstacle_poses(
     cap_front_rtk,
-    cap_front_gps_offset,
+    #cap_front_gps_offset,
     cap_rear_rtk,
-    cap_rear_gps_offset,
+    #cap_rear_gps_offset,
     obs_rear_rtk,
     obs_rear_gps_offset,  # offset along [l, w, h] dim of car
 ):
     # offsets are all [l, w, h] lists (or tuples)
-    assert(len(cap_front_gps_offset) == 3)
-    assert(len(cap_rear_gps_offset) == 3)
+    #assert(len(cap_front_gps_offset) == 3)
+    #assert(len(cap_rear_gps_offset) == 3)
     assert(len(obs_rear_gps_offset) == 3)
     # all coordinate records should be interpolated to same sample base at this point
     assert len(cap_front_rtk) == len(cap_rear_rtk) == len(obs_rear_rtk)
 
     rtk_coords = zip(cap_front_rtk, cap_rear_rtk, obs_rear_rtk)
-    output_poses = []
-    for c in rtk_coords:
-        # FIXME currently just passing obstacle pose through, this is not valid.
-        # Capture vehicle front + rear coordinates and GPS offset values must be
-        # used to calculate a position and orientation of the obstacle relative
-        # to the body frame of the capture vehicle.
-        output_poses.append(c[2])
+    output_poses = [get_obstacle_pos(c[0], c[1], c[2]) for c in rtk_coords]
 
-    # Tracklet gen (consumer of these poses) is expecting list of dicts with tx,ty,tz,rx,ry,rz keys
     return output_poses
 
 
@@ -370,10 +405,10 @@ def main():
 
                 # Convert NED RTK coords of obstacle to capture vehicle body frame relative coordinates
                 obs_tracklet.poses = estimate_obstacle_poses(
-                    cap_front_rtk=cap_rear_rtk_interp_rec,
-                    cap_front_gps_offset=[0.0, 0.0, 0.0],  # FIXME need this value
-                    cap_rear_rtk=cap_front_rtk_interp_rec,
-                    cap_rear_gps_offset=[0.0, 0.0, 0.0],  # FIXME need this value
+                    cap_front_rtk=cap_front_rtk_interp_rec,
+                    #cap_front_gps_offset=[0.0, 0.0, 0.0],
+                    cap_rear_rtk=cap_rear_rtk_interp_rec,
+                    #cap_rear_gps_offset=[0.0, 0.0, 0.0],
                     obs_rear_rtk=obs_interp.to_dict(orient='records'),
                     obs_rear_gps_offset=[mdr['gps_l'], mdr['gps_w'], mdr['gps_h']],
                 )
