@@ -108,16 +108,6 @@ def imu2dict(msg, imu_dict):
     imu_dict["ay"].append(msg.linear_acceleration.y)
     imu_dict["az"].append(msg.linear_acceleration.z)
 
-velodyne_to_front = {
-   'tx': -1.0922,
-   'ty': 0.,
-   'tz': -0.0508,
-   'rx': 0.,
-   'ry': 0.,
-   'rz': 0.,
-   'rw': 1.
-}
-
 
 def get_yaw(p1, p2):
     if abs(p1[0] - p2[0]) < 1e-2:
@@ -129,12 +119,21 @@ def dict_to_vect(di):
     return kd.Vector(di['tx'], di['ty'], di['tz'])
 
 
+def list_to_vect(li):
+    return kd.Vector(li[0], li[1], li[2])
+
+
 def frame_to_dict(frame):
     r, p, y = frame.M.GetRPY()
     return dict(tx=frame.p[0], ty=frame.p[1], tz=frame.p[2], rx=r, ry=p, rz=y)
 
 
-def get_obstacle_pos(front, rear, obstacle, velodyne_to_front=velodyne_to_front):
+def get_obstacle_pos(
+        front,
+        rear,
+        obstacle,
+        velodyne_to_front,
+        gps_to_centroid):
     front_v = dict_to_vect(front)
     rear_v = dict_to_vect(rear)
     obs_v = dict_to_vect(obstacle)
@@ -144,9 +143,13 @@ def get_obstacle_pos(front, rear, obstacle, velodyne_to_front=velodyne_to_front)
 
     diff = obs_v - front_v
     res = rot_z * diff
-    res = res + dict_to_vect(velodyne_to_front)
+    res += list_to_vect(velodyne_to_front)
 
-    #FIXME observer centroid translation still required
+    # FIXME the gps_to_centroid offset of the obstacle should be rotated by
+    # the obstacle's yaw. Unfortunately the obstacle's pose is unknown at this
+    # point so we will assume obstacle is axis aligned with capture vehicle
+    # for now.
+    obs_v += list_to_vect(gps_to_centroid)
 
     return frame_to_dict(kd.Frame(kd.Rotation(), res))
 
@@ -184,17 +187,17 @@ def estimate_obstacle_poses(
     cap_rear_rtk,
     #cap_rear_gps_offset,
     obs_rear_rtk,
-    obs_rear_gps_offset,  # offset along [l, w, h] dim of car
+    obs_rear_gps_offset,  # offset along [l, w, h] dim of car, in obstacle relative coords
 ):
     # offsets are all [l, w, h] lists (or tuples)
-    #assert(len(cap_front_gps_offset) == 3)
-    #assert(len(cap_rear_gps_offset) == 3)
     assert(len(obs_rear_gps_offset) == 3)
     # all coordinate records should be interpolated to same sample base at this point
     assert len(cap_front_rtk) == len(cap_rear_rtk) == len(obs_rear_rtk)
 
+    velo_to_front = [-1.0922, 0, -0.0508]
     rtk_coords = zip(cap_front_rtk, cap_rear_rtk, obs_rear_rtk)
-    output_poses = [get_obstacle_pos(c[0], c[1], c[2]) for c in rtk_coords]
+    output_poses = [
+        get_obstacle_pos(c[0], c[1], c[2], velo_to_front, obs_rear_gps_offset) for c in rtk_coords]
 
     return output_poses
 
@@ -396,12 +399,22 @@ def main():
 
                 # Extract lwh and object type from CSV metadata mapping file
                 md = bs.metadata if bs.metadata else default_metadata
+                if not bs.metadata:
+                    print('Warning: Default metadata used, metadata.csv file should be with .bag files.')
                 for x in md:
                     if x['obstacle_name'] == obs_name:
                         mdr = x
 
                 obs_tracklet = Tracklet(
                     object_type=mdr['object_type'], l=mdr['l'], w=mdr['w'], h=mdr['h'], first_frame=0)
+
+                # NOTE these calculations are done in obstacle oriented coordinates. The LWH offsets from
+                # metadata specify offsets from lower left, rear, ground corner of the vehicle. Where +ve is
+                # along the respective length, width, height axis away from that point. They are converted to
+                # velodyne/ROS compatible X,Y,Z where X +ve is forward, Y +ve is left, and Z +ve is up.
+                lrg_to_gps = [mdr['gps_l'], -mdr['gps_w'], mdr['gps_h']]
+                lrg_to_centroid = [mdr['l'] / 2., -mdr['w'] / 2., mdr['h'] / 2.]
+                gps_to_centroid = np.subtract(lrg_to_centroid, lrg_to_gps)
 
                 # Convert NED RTK coords of obstacle to capture vehicle body frame relative coordinates
                 obs_tracklet.poses = estimate_obstacle_poses(
@@ -410,7 +423,7 @@ def main():
                     cap_rear_rtk=cap_rear_rtk_interp_rec,
                     #cap_rear_gps_offset=[0.0, 0.0, 0.0],
                     obs_rear_rtk=obs_interp.to_dict(orient='records'),
-                    obs_rear_gps_offset=[mdr['gps_l'], mdr['gps_w'], mdr['gps_h']],
+                    obs_rear_gps_offset=gps_to_centroid,
                 )
 
                 collection.tracklets.append(obs_tracklet)
