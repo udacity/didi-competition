@@ -202,6 +202,15 @@ def estimate_obstacle_poses(
     return output_poses
 
 
+def check_oneof_topics_present(topic_map, name, topics):
+    if not isinstance(topics, list):
+        topics = [topics]
+    if not any(t in topic_map for t in topics):
+        print('Error: One of %s must exist in bag, skipping bag %s.' % (topics, name))
+        return False
+    return True
+
+
 def main():
     parser = argparse.ArgumentParser(description='Convert rosbag to images and csv.')
     parser.add_argument('-o', '--outdir', type=str, nargs='?', default='/output',
@@ -255,6 +264,11 @@ def main():
         print("Processing set %s" % bs.name)
         sys.stdout.flush()
 
+        if not check_oneof_topics_present(bs.topic_map, bs.name, CAP_FRONT_RTK_TOPICS):
+            continue
+        if not check_oneof_topics_present(bs.topic_map, bs.name, CAP_REAR_RTK_TOPICS):
+            continue
+
         camera_cols = ["timestamp", "width", "height", "frame_id", "filename"]
         camera_dict = defaultdict(list)
 
@@ -271,7 +285,6 @@ def main():
 
         dataset_outdir = os.path.join(base_outdir, "%s" % bs.name)
         get_outdir(dataset_outdir)
-        print(dataset_outdir)
         if include_images:
             camera_outdir = get_outdir(dataset_outdir, "camera")
         bs.write_infos(dataset_outdir)
@@ -316,12 +329,17 @@ def main():
                 pass
 
         for reader in readers:
+            last_img_log = 0
+            last_msg_log = 0
             for result in reader.read_messages():
                 _process_msg(*result, stats=stats_acc)
-                if ((stats_acc['img_count'] and stats_acc['img_count'] % 1000 == 0) or
-                        (stats_acc['msg_count'] and stats_acc['msg_count'] % 10000 == 0)):
-                    print("%d images, %d messages processed..." %
-                          (stats_acc['img_count'], stats_acc['msg_count']))
+                if last_img_log != stats_acc['img_count'] and stats_acc['img_count'] % 1000 == 0:
+                    print("%d images, processed..." % stats_acc['img_count'])
+                    last_img_log = stats_acc['img_count']
+                    sys.stdout.flush()
+                if last_msg_log != stats_acc['msg_count'] and stats_acc['msg_count'] % 10000 == 0:
+                    print("%d messages processed..." % stats_acc['msg_count'])
+                    last_msg_log = stats_acc['msg_count']
                     sys.stdout.flush()
 
         print("Writing done. %d images, %d messages processed." %
@@ -329,25 +347,33 @@ def main():
         sys.stdout.flush()
 
         camera_df = pd.DataFrame(data=camera_dict, columns=camera_cols)
+        cap_rear_gps_df = pd.DataFrame(data=cap_rear_gps_dict, columns=gps_cols)
+        cap_front_gps_df = pd.DataFrame(data=cap_front_gps_dict, columns=gps_cols)
+        cap_rear_rtk_df = pd.DataFrame(data=cap_rear_rtk_dict, columns=rtk_cols)
+        if not len(cap_rear_rtk_df.index):
+            print('Error: No capture vehicle rear RTK entries exist.'
+                  'Skipping bag %s.' % bag.name)
+            continue
+        cap_front_rtk_df = pd.DataFrame(data=cap_front_rtk_dict, columns=rtk_cols)
+        if not len(cap_rear_rtk_df.index):
+            print('Error: No capture vehicle front RTK entries exist.'
+                  'Skipping bag %s.' % bag.name)
+            continue
+
         if include_images:
             camera_df.to_csv(os.path.join(dataset_outdir, 'capture_vehicle_camera.csv'), index=False)
-
-        cap_rear_gps_df = pd.DataFrame(data=cap_rear_gps_dict, columns=gps_cols)
         cap_rear_gps_df.to_csv(os.path.join(dataset_outdir, 'capture_vehicle_rear_gps.csv'), index=False)
-
-        cap_front_gps_df = pd.DataFrame(data=cap_front_gps_dict, columns=gps_cols)
         cap_front_gps_df.to_csv(os.path.join(dataset_outdir, 'capture_vehicle_front_gps.csv'), index=False)
-
-        cap_rear_rtk_df = pd.DataFrame(data=cap_rear_rtk_dict, columns=rtk_cols)
         cap_rear_rtk_df.to_csv(os.path.join(dataset_outdir, 'capture_vehicle_rear_rtk.csv'), index=False)
-
-        cap_front_rtk_df = pd.DataFrame(data=cap_front_rtk_dict, columns=rtk_cols)
         cap_front_rtk_df.to_csv(os.path.join(dataset_outdir, 'capture_vehicle_front_rtk.csv'), index=False)
 
         obs_rtk_df_dict = {}
         for obs_topic, obs_rtk_dict in obstacle_rtk_dicts.items():
-            obs_prefix, _ = obs_prefix_from_topic(obs_topic)
+            obs_prefix, obs_name = obs_prefix_from_topic(obs_topic)
             obs_rtk_df = pd.DataFrame(data=obs_rtk_dict, columns=rtk_cols)
+            if not len(obs_rtk_df.index):
+                print('Warning: No entries for obstacle %s in %s. Skipping.' % (obs_name, bs.name))
+                continue
             obs_rtk_df.to_csv(os.path.join(dataset_outdir, '%s_rtk.csv' % obs_prefix), index=False)
             obs_rtk_df_dict[obs_topic] = obs_rtk_df
 
@@ -376,6 +402,11 @@ def main():
             cap_front_rtk_interp.to_csv(
                 os.path.join(dataset_outdir, 'capture_vehicle_front_rtk_interp.csv'), header=True)
             cap_front_rtk_interp_rec = cap_front_rtk_interp.to_dict(orient='records')
+
+            if not obs_rtk_df_dict:
+                print('Warning: No obstacles or obstacle RTK data present. '
+                      'Skipping Tracklet generation for %s.' % bs.name)
+                continue
 
             collection = TrackletCollection()
             for obs_topic in obstacle_rtk_dicts.keys():
@@ -427,9 +458,14 @@ def main():
                 )
 
                 collection.tracklets.append(obs_tracklet)
+                # end for obs_topic loop
 
             tracklet_path = os.path.join(dataset_outdir, 'tracklet_labels.xml')
             collection.write_xml(tracklet_path)
+        else:
+            print('Warning: No camera image times were found. '
+                  'Skipping sensor interpolation and Tracklet generation.')
+
 
 if __name__ == '__main__':
     main()
