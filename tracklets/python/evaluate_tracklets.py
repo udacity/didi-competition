@@ -160,11 +160,14 @@ def main():
         help='Predicted tracklet label filename')
     parser.add_argument('groundtruth', type=str, nargs='?', default='tracklet_labels_gt.xml',
         help='Groundtruth tracklet label filename')
+    parser.add_argument('-f', '--filter_indices', type=str, nargs='?', default=None,
+        help='CSV file containing frame indices to include in evaluation. All frames included if argument empty.')
     parser.add_argument('-o', '--outdir', type=str, nargs='?', default=None,
         help='Output folder')
     parser.add_argument('-d', dest='debug', action='store_true', help='Debug print enable')
     parser.set_defaults(debug=False)
     args = parser.parse_args()
+    filter_indices_file = args.filter_indices
     output_dir = args.outdir
 
     pred_file = args.prediction
@@ -204,22 +207,54 @@ def main():
     if not num_frames:
         print('Error: No frames to evaluate')
         exit(-1)
-    eval_frames = [EvalFrame() for _ in range(num_frames)]
 
+    if filter_indices_file:
+        if not os.path.exists(filter_indices_file):
+            sys.stderr.write('Error: Filter indices files specified but does not exist.\n')
+            exit(-1)
+        with open(filter_indices_file, 'r') as f:
+            def safe_int(x):
+                try:
+                    return int(x.split(',')[0])
+                except ValueError:
+                    return 0
+            eval_indices = [safe_int(line) for line in f][1:]  # skip header line
+        print('Filter file %s loaded with %d frame indices to include for evaluation.' %
+              (filter_indices_file, len(eval_indices)))
+    else:
+        eval_indices = list(range(num_frames))
+
+    eval_frames = {i: EvalFrame() for i in eval_indices}
+
+    included_gt = 0
+    excluded_gt = 0
     for frame_idx, tracklet_idx, object_type, box_vol, oriented_box in generate_boxes(gt_tracklets):
-        eval_frames[frame_idx].gt_obs.append(
-            Obs(tracklet_idx, object_type, box_vol, oriented_box))
+        if frame_idx in eval_frames:
+            eval_frames[frame_idx].gt_obs.append(
+                Obs(tracklet_idx, object_type, box_vol, oriented_box))
+            included_gt += 1
+        else:
+            excluded_gt += 1
 
+    included_pred = 0
+    excluded_pred = 0
     for frame_idx, tracklet_idx, object_type, box_vol, oriented_box in generate_boxes(pred_tracklets):
-        eval_frames[frame_idx].pred_obs.append(
-            Obs(tracklet_idx, object_type, box_vol, oriented_box))
+        if frame_idx in eval_frames:
+            eval_frames[frame_idx].pred_obs.append(
+                Obs(tracklet_idx, object_type, box_vol, oriented_box))
+            included_pred += 1
+        else:
+            excluded_pred += 1
+
+    print('%d ground truth object instances included in evaluation, % s excluded' % (included_gt, excluded_gt))
+    print('%d predicted object instances included in evaluation, % s excluded' % (included_pred, excluded_pred))
 
     iou_thresholds = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8]
     pr_at_ious = {k: Counter() for k in iou_thresholds}
 
     intersection_count = Counter()
     union_count = Counter()
-    for frame_idx in range(num_frames):
+    for frame_idx in eval_indices:
         #  calc scores
         eval_frames[frame_idx].score(
             intersection_count,
@@ -234,10 +269,11 @@ def main():
     # - weighted mean of per class ratio
     iou_sum = 0.0
     for k in intersection_count.keys():
-        iou = intersection_count[k] / union_count[k]
+        iou = intersection_count[k] / union_count[k] if union_count[k] else 0.
         results_table['iou_per_obj'][k] = float(iou)
         iou_sum += iou
-    results_table['iou_per_obj']['All'] = float(iou_sum / len(intersection_count))
+    results_table['iou_per_obj']['All'] = \
+        float(iou_sum / len(intersection_count)) if len(intersection_count) else 0.
 
     # FIXME add support for per class P/R scores?
     # NOTE P/R scores need further analysis given their use with the greedy pred - gt matching
