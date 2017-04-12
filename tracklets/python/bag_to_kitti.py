@@ -149,7 +149,7 @@ def get_obstacle_pos(
     # the obstacle's yaw. Unfortunately the obstacle's pose is unknown at this
     # point so we will assume obstacle is axis aligned with capture vehicle
     # for now.
-    obs_v += list_to_vect(gps_to_centroid)
+    res += list_to_vect(gps_to_centroid)
 
     return frame_to_dict(kd.Frame(kd.Rotation(), res))
 
