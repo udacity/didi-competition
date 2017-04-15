@@ -1,0 +1,11 @@
+uint32 status
+uint32 number
+float32 range
+float32 rate
+float32 accel
+float32 angle
+float32 width
+float32 late_rate
+bool moving
+float32 power
+float32 absolute_rate
