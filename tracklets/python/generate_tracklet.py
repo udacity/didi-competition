@@ -6,7 +6,6 @@ def writeln(f, string, tab_count, tab_as_space=False):
     tab_spaces = 4
     indent_str = " " * tab_spaces * tab_count if tab_as_space else "\t" * tab_count
     f.write(indent_str + string + "\n")
-    pass
 
 
 class Tracklet(object):
@@ -64,6 +63,7 @@ class Tracklet(object):
         writeln(f, '<finished>1</finished>', tab_level)
         tab_level -= 1
         writeln(f, '</item>', tab_level)
+        return class_id
 
 
 class TrackletCollection(object):
