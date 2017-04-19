@@ -611,7 +611,7 @@ def main():
                     plt.plot(
                         obs_front_interp['tx'].tolist(),
                         obs_front_interp['ty'].tolist())
-                fig.savefig(os.path.join(dataset_outdir, '%s-%s-plot.png' % (bs.name, obs_name)))
+                fig.savefig(os.path.join(dataset_outdir, '%s-%s-plot.png' % (bs.name.replace('/', '-'), obs_name)))
                 plt.close(fig)
 
                 # Extract lwh and object type from CSV metadata mapping file
