@@ -110,8 +110,6 @@ def imu2dict(msg, imu_dict):
 
 
 def get_yaw(p1, p2):
-    if abs(p1[0] - p2[0]) < 1e-2:
-        return 0.
     return math.atan2(p1[1] - p2[1], p1[0] - p2[0])
 
 
