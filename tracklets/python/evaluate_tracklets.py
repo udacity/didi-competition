@@ -154,6 +154,17 @@ def generate_boxes(tracklets):
             frame_idx += 1
 
 
+def load_indices(indices_file):
+    with open(indices_file, 'r') as f:
+        def safe_int(x):
+            try:
+                return int(x.split(',')[0])
+            except ValueError:
+                return 0
+        indices = [safe_int(line) for line in f][1:]  # skip header line
+    return indices
+
+
 def main():
     parser = argparse.ArgumentParser(description='Evaluate two tracklet files.')
     parser.add_argument('prediction', type=str, nargs='?', default='tracklet_labels.xml',
@@ -162,12 +173,15 @@ def main():
         help='Groundtruth tracklet label filename')
     parser.add_argument('-f', '--filter_indices', type=str, nargs='?', default=None,
         help='CSV file containing frame indices to include in evaluation. All frames included if argument empty.')
+    parser.add_argument('-e', '--exclude_indices', type=str, nargs='?', default=None,
+        help='CSV file containing frame indices to exclude (takes priority over inclusions) from evaluation.')
     parser.add_argument('-o', '--outdir', type=str, nargs='?', default=None,
         help='Output folder')
     parser.add_argument('-d', dest='debug', action='store_true', help='Debug print enable')
     parser.set_defaults(debug=False)
     args = parser.parse_args()
     filter_indices_file = args.filter_indices
+    exclude_indices_file = args.exclude_indices
     output_dir = args.outdir
 
     pred_file = args.prediction
@@ -212,17 +226,20 @@ def main():
         if not os.path.exists(filter_indices_file):
             sys.stderr.write('Error: Filter indices files specified but does not exist.\n')
             exit(-1)
-        with open(filter_indices_file, 'r') as f:
-            def safe_int(x):
-                try:
-                    return int(x.split(',')[0])
-                except ValueError:
-                    return 0
-            eval_indices = [safe_int(line) for line in f][1:]  # skip header line
+        eval_indices = load_indices(filter_indices_file)
         print('Filter file %s loaded with %d frame indices to include for evaluation.' %
               (filter_indices_file, len(eval_indices)))
     else:
         eval_indices = list(range(num_frames))
+
+    if exclude_indices_file:
+        if not os.path.exists(exclude_indices_file):
+            sys.stderr.write('Error: Exclude indices files specified but does not exist.\n')
+            exit(-1)
+        exclude_indices = set(load_indices(exclude_indices_file))
+        eval_indices = [x for x in eval_indices if x not in exclude_indices]
+        print('Exclude file %s loaded with %d frame indices to exclude from evaluation.' %
+              (exclude_indices_file, len(exclude_indices)))
 
     eval_frames = {i: EvalFrame() for i in eval_indices}
 
