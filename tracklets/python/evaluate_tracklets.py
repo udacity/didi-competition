@@ -134,14 +134,14 @@ class Obs(object):
         return str(self.tracklet_idx) + ' ' + str(self.object_type)
 
 
-def generate_obstacles(tracklets):
+def generate_obstacles(tracklets, override_size=None):
     for tracklet_idx, tracklet in enumerate(tracklets):
         frame_idx = tracklet.first_frame
         for trans, rot in zip(tracklet.trans, tracklet.rots):
             obstacle = Obs(
                 tracklet_idx,
                 tracklet.object_type,
-                tracklet.size,
+                override_size if override_size is not None else tracklet.size,
                 trans,
                 rot)
             yield frame_idx, obstacle
@@ -234,12 +234,16 @@ def main():
         help='Output folder')
     parser.add_argument('-m', '--method', type=str, nargs='?', default='box',
         help='Volume intersection calculation method. "box" or "sphere" (default = "box")')
+    parser.add_argument('-g', dest='override_lwh_with_gt', action='store_true',
+        help='Override predicted lwh values with value from first gt tracklet.')
     parser.add_argument('-d', dest='debug', action='store_true', help='Debug print enable')
     parser.set_defaults(debug=False)
+    parser.set_defaults(override_lwh_with_gt=False)
     args = parser.parse_args()
     filter_indices_file = args.filter_indices
     exclude_indices_file = args.exclude_indices
     output_dir = args.outdir
+    override_lwh_with_gt = args.override_lwh_with_gt
 
     volume_method = args.method
     if volume_method not in VOLUME_METHODS:
@@ -276,8 +280,11 @@ def main():
         num_pred_frames = max(num_pred_frames, pred_tracklet.first_frame + pred_tracklet.num_frames)
         # FIXME START TEST HACK
         if False:
-            blah = np.random.normal(0, 0.3, pred_tracklet.trans.shape)
-            pred_tracklets[p_idx].trans = pred_tracklets[p_idx].trans + blah
+            trans_noise = np.random.normal(0, 0.3, pred_tracklet.trans.shape)
+            #rots_noise = np.random.normal(0, 0.1, pred_tracklet.rots.shape)
+            pred_tracklets[p_idx].trans = pred_tracklet.trans + trans_noise
+            #pred_tracklets[p_idx].rots = pred_tracklet.rots + rots_noise
+            pred_tracklets[p_idx].size = pred_tracklet.size + np.random.normal(0, 0.2, pred_tracklet.size.shape)
         # FIXME END HACK
 
     num_frames = max(num_gt_frames, num_pred_frames)
@@ -317,7 +324,8 @@ def main():
 
     included_pred = 0
     excluded_pred = 0
-    for frame_idx, obstacle in generate_obstacles(pred_tracklets):
+    gt_size = gt_tracklets[0].size if override_lwh_with_gt else None
+    for frame_idx, obstacle in generate_obstacles(pred_tracklets, override_size=gt_size):
         if frame_idx in eval_frames:
             eval_frames[frame_idx].pred_obs.append(obstacle)
             included_pred += 1
