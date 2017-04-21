@@ -13,64 +13,139 @@ import yaml
 
 from parse_tracklet import *
 
+VOLUME_METHODS = ['box', 'sphere']
+
 
 def lwh_to_box(l, w, h):
     box = np.array([
         [-l / 2, -l / 2, l / 2, l / 2, -l / 2, -l / 2, l / 2, l / 2],
         [w / 2, -w / 2, -w / 2, w / 2, w / 2, -w / 2, -w / 2, w / 2],
-        # FIXME constrain height to range from ground or relative to centroid like l & w?
         [-h / 2, -h / 2, -h / 2, -h / 2, h / 2, h / 2, h / 2, h / 2],
-        #[0.0, 0.0, 0.0, 0.0, h, h, h, h]
     ])
     return box
 
 
-def iou_3d_yaw(pred_vol, pred_box, gt_vol, gt_box):
+def iou_bbox_with_yaw(vol_a, box_a, vol_b, box_b):
     """
     A simplified calculation of 3d bounding box intersection
     over union. It is assumed that the bounding box is only rotated
     around Z axis (yaw) from an axis-aligned box.
 
-    :param pred_vol: predicted obstacle volume
-    :param pred_box: predicted obstacle bounding box
-    :param gt_vol: ground truth obstacle volume
-    :param gt_box: ground truth obstacle bounding box
+    :param vol_a, vol_b: precalculated obstacle volumes for comparison
+    :param box_a, box_b: obstacle bounding boxes for comparison
     :return: iou float, intersection volume float
     """
     # height (Z) overlap
-    pred_min_h = np.min(pred_box[2])
-    pred_max_h = np.max(pred_box[2])
-    gt_min_h = np.min(gt_box[2])
-    gt_max_h = np.max(gt_box[2])
-    max_of_min = np.max([pred_min_h, gt_min_h])
-    min_of_max = np.min([pred_max_h, gt_max_h])
+    min_h_a = np.min(box_a[2])
+    max_h_a = np.max(box_a[2])
+    min_h_b = np.min(box_b[2])
+    max_h_b = np.max(box_b[2])
+    max_of_min = np.max([min_h_a, min_h_b])
+    min_of_max = np.min([max_h_a, max_h_b])
     z_intersection = np.max([0, min_of_max - max_of_min])
     if z_intersection == 0:
-        return 0, 0
+        return 0., 0.
 
     # oriented XY overlap
-    pred_xy_poly = Polygon(zip(*pred_box[0:2, 0:4]))
-    gt_xy_poly = Polygon(zip(*gt_box[0:2, 0:4]))
-    xy_intersection = gt_xy_poly.intersection(pred_xy_poly).area
+    xy_poly_a = Polygon(zip(*box_a[0:2, 0:4]))
+    xy_poly_b = Polygon(zip(*box_b[0:2, 0:4]))
+    xy_intersection = xy_poly_a.intersection(xy_poly_b).area
     if xy_intersection == 0:
-        return 0, 0
+        return 0., 0.
 
     intersection = z_intersection * xy_intersection
-    union = pred_vol + gt_vol - intersection
+    union = vol_a + vol_b - intersection
+    iou = intersection / union
+    return iou, intersection
+
+
+def iou_sphere(vol_a, sphere_a, vol_b, sphere_b):
+    dist = np.linalg.norm(sphere_a[0:3] - sphere_b[0:3])
+    r_a, r_b = sphere_a[3], sphere_b[3]
+    if dist >= r_a + r_b:
+        # spheres do not overlap in any way
+        return 0., 0.
+    elif dist <= abs(r_a - r_b):
+        # one sphere fully inside the other (includes coincident)
+        # take volume of smaller sphere as intersection
+        intersection = 4/3. * np.pi * min(r_a, r_b)**3
+    else:
+        # spheres partially overlap, calculate intersection as per
+        # http://mathworld.wolfram.com/Sphere-SphereIntersection.html
+        intersection = (r_a + r_b - dist)**2
+        intersection *= (dist**2 + 2*dist*(r_a + r_b) - 3*(r_a - r_b)**2)
+        intersection *= np.pi / (12*dist)
+    union = vol_a + vol_b - intersection
     iou = intersection / union
     return iou, intersection
 
 
 class Obs(object):
 
-    def __init__(self, tracklet_idx, object_type, box_vol, oriented_box):
+    def __init__(self, tracklet_idx, object_type, size, position, rotation):
         self.tracklet_idx = tracklet_idx
         self.object_type = object_type
-        self.box_vol = box_vol
-        self.oriented_box = oriented_box
+        self.h, self.w, self.l = size
+        self.position = position
+        self.yaw = rotation[2]
+        self._oriented_bbox = None  # for caching
+
+    def get_bbox(self):
+        if self._oriented_bbox is None:
+            bbox = lwh_to_box(self.l, self.w, self.h)
+            # calc 3D bound box in capture vehicle oriented coordinates
+            rot_mat = np.array([
+                [np.cos(self.yaw), -np.sin(self.yaw), 0.0],
+                [np.sin(self.yaw), np.cos(self.yaw), 0.0],
+                [0.0, 0.0, 1.0]])
+            self._oriented_bbox = np.dot(rot_mat, bbox) + np.tile(self.position, (8, 1)).T
+        return self._oriented_bbox
+
+    def get_sphere(self):
+        # For a quick and dirty bounding sphere we will take 1/2 the largest
+        # obstacle dim as the radius and call it close enough, for our purpose won't
+        # make a noteworthy difference from a circumscribed sphere of the bbox
+        r = max(self.h, self.w, self.l)/2
+        # sphere passed as 4 element vector with radius as last element
+        return np.append(self.position, r)
+
+    def get_vol_sphere(self):
+        r = max(self.h, self.w, self.l)/2
+        return 4/3. * np.pi * r**3
+
+    def get_vol_box(self):
+        return self.h * self.w * self.l
+
+    def get_vol(self, method='box'):
+        return self.get_vol_sphere() if method == 'sphere' else self.get_vol_box()
+
+    def intersection(self, other, method='box'):
+        if method == 'sphere':
+            iou_val, intersection_vol = iou_sphere(
+                self.get_vol_sphere(), self.get_sphere(),
+                other.get_vol_sphere(), other.get_sphere())
+        else:
+            iou_val, intersection_vol = iou_bbox_with_yaw(
+                self.get_vol_box(), self.get_bbox(),
+                other.get_vol_box(), other.get_bbox())
+        return iou_val, intersection_vol
 
     def __repr__(self):
         return str(self.tracklet_idx) + ' ' + str(self.object_type)
+
+
+def generate_obstacles(tracklets):
+    for tracklet_idx, tracklet in enumerate(tracklets):
+        frame_idx = tracklet.first_frame
+        for trans, rot in zip(tracklet.trans, tracklet.rots):
+            obstacle = Obs(
+                tracklet_idx,
+                tracklet.object_type,
+                tracklet.size,
+                trans,
+                rot)
+            yield frame_idx, obstacle
+            frame_idx += 1
 
 
 class EvalFrame(object):
@@ -79,7 +154,7 @@ class EvalFrame(object):
         self.gt_obs = []
         self.pred_obs = []
 
-    def score(self, intersection_count, union_count, pr_at_ious):
+    def score(self, intersection_count, union_count, pr_at_ious, method='box'):
         # Perform IOU calculations between all gt and predicted obstacle pairings and greedily match those
         # with the largest IOU. Possibly other matching algorithms will work better/be more efficient.
         # NOTE: This is not a tracking oriented matching like MOTA, predicted -> gt affinity context
@@ -93,9 +168,7 @@ class EvalFrame(object):
         for p_idx, p in enumerate(self.pred_obs):
             for g_idx, g in enumerate(self.gt_obs):
                 if p.object_type == g.object_type:
-                    iou_val, intersection_vol = iou_3d_yaw(
-                        p.box_vol, p.oriented_box,
-                        g.box_vol, g.oriented_box)
+                    iou_val, intersection_vol = g.intersection(p, method=method)
                     if iou_val > 0:
                         intersections.append((iou_val, intersection_vol, p_idx, g_idx))
 
@@ -104,12 +177,13 @@ class EvalFrame(object):
         intersections.sort(key=lambda x: x[0], reverse=True)
         for iou_val, intersection_vol, p_idx, g_idx in intersections:
             if g_idx in fn and p_idx in fp:
-                fn.remove(g_idx)  # consume the groundtruth
+                fn.remove(g_idx)  # consume the ground truth
                 fp.remove(p_idx)  # consume the prediction
                 obs = self.gt_obs[g_idx]
                 #print('IOU: ', iou_val, intersection_vol)
                 intersection_count[obs.object_type] += intersection_vol
-                union_count[obs.object_type] += obs.box_vol + self.pred_obs[p_idx].box_vol - intersection_vol
+                union_count[obs.object_type] += \
+                    obs.get_vol(method) + self.pred_obs[p_idx].get_vol(method) - intersection_vol
                 for iou_threshold in pr_at_ious.keys():
                     if iou_val > iou_threshold:
                         pr_at_ious[iou_threshold]['TP'] += 1
@@ -123,35 +197,16 @@ class EvalFrame(object):
         # sum remaining false negative volume (unmatched ground truth box volume)
         for g_idx in fn:
             obs = self.gt_obs[g_idx]
-            union_count[obs.object_type] += obs.box_vol
+            union_count[obs.object_type] += obs.get_vol(method)
             for iou_threshold in pr_at_ious.keys():
                 pr_at_ious[iou_threshold]['FN'] += 1
 
         # sum remaining false positive volume (unmatched prediction volume)
         for p_idx in fp:
             obs = self.pred_obs[p_idx]
-            union_count[obs.object_type] += obs.box_vol
+            union_count[obs.object_type] += obs.get_vol(method)
             for iou_threshold in pr_at_ious.keys():
                 pr_at_ious[iou_threshold]['FP'] += 1
-
-
-def generate_boxes(tracklets):
-    for tracklet_idx, tracklet in enumerate(tracklets):
-        h, w, l = tracklet.size
-        box_vol = h * w * l
-        tracklet_box = lwh_to_box(l, w, h)
-        # print(tracklet_box)
-        frame_idx = tracklet.first_frame
-        for trans, rot in zip(tracklet.trans, tracklet.rots):
-            # calc 3D bound box in capture vehicle oriented coordinates
-            yaw = rot[2]  # rotations besides yaw should be 0
-            rot_mat = np.array([
-                [np.cos(yaw), -np.sin(yaw), 0.0],
-                [np.sin(yaw), np.cos(yaw), 0.0],
-                [0.0, 0.0, 1.0]])
-            oriented_box = np.dot(rot_mat, tracklet_box) + np.tile(trans, (8, 1)).T
-            yield frame_idx, tracklet_idx, tracklet.object_type, box_vol, oriented_box
-            frame_idx += 1
 
 
 def load_indices(indices_file):
@@ -177,12 +232,20 @@ def main():
         help='CSV file containing frame indices to exclude (takes priority over inclusions) from evaluation.')
     parser.add_argument('-o', '--outdir', type=str, nargs='?', default=None,
         help='Output folder')
+    parser.add_argument('-m', '--method', type=str, nargs='?', default='box',
+        help='Volume intersection calculation method. "box" or "sphere" (default = "box")')
     parser.add_argument('-d', dest='debug', action='store_true', help='Debug print enable')
     parser.set_defaults(debug=False)
     args = parser.parse_args()
     filter_indices_file = args.filter_indices
     exclude_indices_file = args.exclude_indices
     output_dir = args.outdir
+
+    volume_method = args.method
+    if volume_method not in VOLUME_METHODS:
+        sys.stderr.write('Error: Invalid volume method argument "%s". Must be one of %s\n'
+                         % (volume_method, VOLUME_METHODS))
+        exit(-1)
 
     pred_file = args.prediction
     if not os.path.exists(pred_file):
@@ -245,20 +308,18 @@ def main():
 
     included_gt = 0
     excluded_gt = 0
-    for frame_idx, tracklet_idx, object_type, box_vol, oriented_box in generate_boxes(gt_tracklets):
+    for frame_idx, obstacle in generate_obstacles(gt_tracklets):
         if frame_idx in eval_frames:
-            eval_frames[frame_idx].gt_obs.append(
-                Obs(tracklet_idx, object_type, box_vol, oriented_box))
+            eval_frames[frame_idx].gt_obs.append(obstacle)
             included_gt += 1
         else:
             excluded_gt += 1
 
     included_pred = 0
     excluded_pred = 0
-    for frame_idx, tracklet_idx, object_type, box_vol, oriented_box in generate_boxes(pred_tracklets):
+    for frame_idx, obstacle in generate_obstacles(pred_tracklets):
         if frame_idx in eval_frames:
-            eval_frames[frame_idx].pred_obs.append(
-                Obs(tracklet_idx, object_type, box_vol, oriented_box))
+            eval_frames[frame_idx].pred_obs.append(obstacle)
             included_pred += 1
         else:
             excluded_pred += 1
@@ -276,7 +337,8 @@ def main():
         eval_frames[frame_idx].score(
             intersection_count,
             union_count,
-            pr_at_ious)
+            pr_at_ious,
+            method=volume_method)
 
     results_table = {'iou_per_obj': {}, 'pr_per_iou': {}}
 
