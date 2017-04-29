@@ -1,6 +1,6 @@
 <img src="images/urdf.png" alt="MKZ Model" width="800px"></img>
 
-The repository holds the data required for getting started with the Udacity/Didi self-driving car challenge. To generate tracklets (annotation data) from the released datasets, check out the Docker code in the ```/tracklet``` folder. For sensor transform information, check out ```/mkz-description```. 
+The repository holds the data required for getting started with the Udacity/Didi self-driving car challenge. To generate tracklets (annotation data) from the released datasets, check out the Docker code in the ```/tracklet``` folder. For sensor transform information, check out ```/mkz-description```.
 
 Please note that tracklets cannot be generated for Dataset 1 without modifying this code, as we added an additional RTK GPS receiver onto the capture vehicle in order to determine orientation. The orientation determination to enable world to capture vehicle transformations on Dataset 2 is currently being written, with a release target for 4/4/2017 EOD.
 
@@ -11,6 +11,9 @@ Here are links to the datasets we've released specifically for this challenge:
 
 
 ## Resources
+Starting Guides:
+* [**Udacity Intro**](docs/GettingStarted.md) – Basic ROS install and displaying data in RVIZ
+
 Here's a list of the projects we've open sourced already that may be helpful:
 * [**ROS Examples**](https://github.com/mjshiggins/ros-examples) – Example ROS nodes for consuming/processing the released datasets (work in progress)
 * [**Annotated Driving Datasets**](https://github.com/udacity/self-driving-car/tree/master/annotations) – Many hours of labelled driving data
