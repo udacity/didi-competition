@@ -56,8 +56,8 @@ class BagReader(object):
     def read_messages(self):
         for f in self.bagfiles:
             with rosbag.Bag(f, "r") as bag:
-                for topic, msg, _ in bag.read_messages(topics=self.topics):
-                    yield topic, msg
+                for topic, msg, ts in bag.read_messages(topics=self.topics):
+                    yield topic, msg, ts
 
 
 JOIN_THRESH_NS = 10 * MIN_PER_NANOSEC
