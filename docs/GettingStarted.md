@@ -119,3 +119,20 @@ Select the ‘By Topic’ tab and choose the topic that you want to visualize:
 Now you can see the point cloud displayed:
 
 <img src="imgs/point_cloud.png" alt="" width="800px"></img>
+
+If you want to display a point cloud, but don't see the /velodyne_points topic in RVIZ, go through the conversion section below to create the topic.
+
+## Convert /velodyne_packets to /velodyne_points
+Depending on which dataset you're using, you may find that the bag file is missing the Velodyne point cloud (published on the /velodyne_points ROS topic). This is omitted to reduce the size of the dataset. The LIDAR readings are represented in a compressed packet form (/velodyne_packets). ROS provides a tools for converting between these formats.
+
+Install the Velodyne package for your version of ROS (Indigo in this example)
+``` bash
+sudo apt-get install ros-indigo-velodyne
+```
+
+Run the conversion tool for the VLP16 LIDAR unit that Udacity used to record the data (you may have a different path to the config file depending on your installation)
+``` bash
+rosrun velodyne_pointcloud_node _calibration:/opt/ros/indigo/share/velodyne_pointcloud/params/VLP16db.yaml
+```
+
+Now when you play a bag file with the /velodyne_packets topic, it will automatically get converted to a point cloud format and republished as /velodyne_points
