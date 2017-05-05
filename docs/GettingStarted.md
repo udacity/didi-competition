@@ -130,9 +130,9 @@ Install the Velodyne package for your version of ROS (Indigo in this example)
 sudo apt-get install ros-indigo-velodyne
 ```
 
-Run the conversion tool for the VLP16 LIDAR unit that Udacity used to record the data (you may have a different path to the config file depending on your installation)
+Run the conversion tool for the HDL-32E LIDAR unit that Udacity used to record the data (you may have a different path to the config file depending on your installation)
 ``` bash
-rosrun velodyne_pointcloud_node _calibration:/opt/ros/indigo/share/velodyne_pointcloud/params/VLP16db.yaml
+rosrun velodyne_pointcloud_node _calibration:/opt/ros/indigo/share/velodyne_pointcloud/params/32db.yaml
 ```
 
 Now when you play a bag file with the /velodyne_packets topic, it will automatically get converted to a point cloud format and republished as /velodyne_points
