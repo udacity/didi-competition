@@ -374,10 +374,8 @@ def main():
         correct = CORRECT_PLANE
     elif args.correct == 'basic':
         correct = CORRECT_BASIC
-
     msg_only = args.msg_only
     debug_print = args.debug
-    print(ts_src)
     bridge = CvBridge()
 
     include_images = False if msg_only else True
