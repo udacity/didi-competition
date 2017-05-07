@@ -14,6 +14,7 @@ import argparse
 import functools
 import matplotlib
 matplotlib.use('Agg')
+from mpl_toolkits.mplot3d import Axes3D
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -22,12 +23,21 @@ import PyKDL as kd
 from bag_topic_def import *
 from bag_utils import *
 from generate_tracklet import *
+from scipy.spatial import kdtree
+from scipy import stats
 
 
 # Bag message timestamp source
 TS_SRC_PUB = 0
 TS_SRC_REC = 1
 TS_SRC_OBS_REC = 2
+
+# Correction method
+CORRECT_NONE = 0
+CORRECT_PLANE = 1
+
+CAP_RTK_FRONT_Z = .3323 + 1.2192
+CAP_RTK_REAR_Z = .3323 + .8636
 
 
 def get_outdir(base_dir, name=''):
@@ -187,9 +197,7 @@ def interpolate_to_camera(camera_df, other_dfs, filter_cols=[]):
 
 def estimate_obstacle_poses(
     cap_front_rtk,
-    #cap_front_gps_offset,
     cap_rear_rtk,
-    #cap_rear_gps_offset,
     obs_rear_rtk,
     obs_rear_gps_offset,  # offset along [l, w, h] dim of car, in obstacle relative coords
 ):
@@ -215,6 +223,124 @@ def check_oneof_topics_present(topic_map, name, topics):
     return True
 
 
+def filter_outliers(points):
+    kt = kdtree.KDTree(points)
+    distances, i = kt.query(kt.data, k=9)
+    z_distances = stats.zscore(np.mean(distances, axis=1))
+    o_filter = abs(z_distances) < 1  # rather arbitrary
+    return points[o_filter]
+
+
+def rotation_matrix(axis, theta):
+    """
+    Return the rotation matrix associated with counterclockwise rotation about
+    the given axis by theta radians.
+    http://stackoverflow.com/questions/6802577/python-rotation-of-3d-vector
+    """
+    axis = np.asarray(axis)
+    axis /= math.sqrt(np.dot(axis, axis))
+    a = math.cos(theta/2.0)
+    b, c, d = -axis*math.sin(theta/2.0)
+    aa, bb, cc, dd = a*a, b*b, c*c, d*d
+    bc, ad, ac, ab, bd, cd = b*c, a*d, a*c, a*b, b*d, c*d
+    return np.array([[aa+bb-cc-dd, 2*(bc+ad), 2*(bd-ac)],
+                     [2*(bc-ad), aa+cc-bb-dd, 2*(cd+ab)],
+                     [2*(bd+ac), 2*(cd-ab), aa+dd-bb-cc]])
+
+
+def fit_plane(points, do_plot=True, dataset_outdir='', name='', debug=True):
+    if debug:
+        print('Processing %d points' % points.shape[0])
+
+    centroid = np.mean(points, axis=0)
+    if debug:
+        print('centroid', centroid)
+    points -= centroid
+
+    _, _, v = np.linalg.svd(points)
+    line = v[0] / np.linalg.norm(v[0])
+    norm = v[-1] / np.linalg.norm(v[-1])
+    norm *= np.sign(v[-1][-1])
+    use_line = False
+    if np.argmax(norm) != 2:
+        print('Warning: Z component of plane normal is not largest, plane fit likely not optimal. Fitting line instead.')
+        use_line = True
+    if debug:
+        print('line', line)
+        print('norm', norm)
+
+    if use_line:
+        # find a rotation axis perpendicular to the fit line of the coords and
+        # calculate rotation angle around that axis that levels fit line in z
+        axis = np.cross(line, np.array([0, 0, 1.]))
+        angle = line[2]
+    else:
+        # use plane normal to calculate a rotation axis and angle necessary
+        # to level points in z
+        z_cross_norm = np.cross(np.array([0, 0, 1.]), norm)
+        angle = np.arcsin(np.linalg.norm(z_cross_norm))
+        axis = z_cross_norm / np.linalg.norm(z_cross_norm)
+    if debug:
+        print('rotation', angle, axis)
+
+    rot_m = rotation_matrix(axis, -angle)
+
+    if do_plot:
+        x_max, x_min = max(points[:, 0]), min(points[:, 0])
+        y_max, y_min = max(points[:, 1]), min(points[:, 1])
+        xy_max = max(x_max, y_max)
+        xy_min = min(x_min, y_min)
+
+        # compute normal of corrected points to visualize and verify
+        points_rot = np.dot(rot_m, points.T).T
+        _, _, vr = np.linalg.svd(points_rot)
+        norm_rot = vr[-1] / np.linalg.norm(vr[-1])
+
+        # build plane surface for original points and best fit plane for plotting
+        # NOTE if line fit was used instead, this still just plots the plane fit
+        d = np.array([0, 0, 0]).dot(norm)
+        dr = np.array([0, 0, 0]).dot(norm_rot)
+        xg, yg = np.meshgrid(
+            range(int(x_min*1.3), int(math.ceil(x_max*1.3))),
+            range(int(y_min*1.3), int(math.ceil(y_max*1.3))))
+        zg = (d - norm[0] * xg - norm[1] * yg) * 1. / norm[2]
+        zgr = (dr - norm_rot[0] * xg - norm_rot[1] * yg) * 1. / norm_rot[2]
+
+        line_pts = line * np.mgrid[xy_min:xy_max:2j][:, np.newaxis]
+        axis_pts = axis * np.mgrid[-xy_min:xy_min:2j][:, np.newaxis]
+        norm_pts = norm * np.mgrid[-xy_min:xy_min:2j][:, np.newaxis]
+
+        if False:
+            points += centroid
+            points_rot += centroid
+            line_pts += centroid
+            axis_pts += centroid
+            norm_pts += centroid
+            xg += int(centroid[0])
+            yg += int(centroid[1])
+            zg += centroid[2]
+            zgr += centroid[2]
+
+        fig = plt.figure()
+        ax = fig.add_subplot(111, projection='3d')
+        ax.scatter(*points.T)
+        ax.scatter(*points_rot.T, c='y')
+        ax.plot3D(*line_pts.T, c='r')
+        ax.plot3D(*axis_pts.T, c='c')
+        #ax.plot3D(*norm_pts.T, c='g')
+        ax.plot_surface(xg, yg, zg, alpha=0.3)
+        ax.plot_surface(xg, yg, zgr, alpha=0.3, color='y')
+        angles = [0, 30, 60]
+        elev = [0, 15, 30]
+        for a in angles:
+            for e in elev:
+                ax.view_init(elev=e, azim=a)
+                fig.savefig(os.path.join(dataset_outdir, '%s-%d-%d-plot.png' % (name, e, a)))
+        plt.close(fig)
+
+    return centroid, norm, rot_m
+
+
 def main():
     parser = argparse.ArgumentParser(description='Convert rosbag to images and csv.')
     parser.add_argument('-o', '--outdir', type=str, nargs='?', default='/output',
@@ -226,6 +352,9 @@ def main():
     parser.add_argument('-t', '--ts_src', type=str, nargs='?', default='pub',
         help="""Timestamp source. 'pub'=capture node publish time, 'rec'=receiver bag record time,
         'obs_rec'=record time for obstacles topics only, pub for others. Default='pub'""")
+    parser.add_argument('-c', '--correct', type=str, nargs='?', default='',
+        help="""Correction method. ''=no correction, 'plane'=fit plane to RTK coords and level.
+        Default=''""")
     parser.add_argument('-m', dest='msg_only', action='store_true', help='Messages only, no images')
     parser.add_argument('-d', dest='debug', action='store_true', help='Debug print enable')
     parser.set_defaults(msg_only=False)
@@ -240,27 +369,21 @@ def main():
         ts_src = TS_SRC_REC
     elif args.ts_src == 'obs_rec':
         ts_src = TS_SRC_OBS_REC
+    correct = CORRECT_NONE
+    if args.correct == 'plane':
+        correct = CORRECT_PLANE
+    elif args.correct == 'basic':
+        correct = CORRECT_BASIC
+
     msg_only = args.msg_only
     debug_print = args.debug
-
+    print(ts_src)
     bridge = CvBridge()
 
     include_images = False if msg_only else True
 
     filter_topics = CAMERA_TOPICS + CAP_FRONT_RTK_TOPICS + CAP_REAR_RTK_TOPICS \
         + CAP_FRONT_GPS_TOPICS + CAP_REAR_GPS_TOPICS
-
-    # For bag sets that may have missing metadata.csv file
-    default_metadata = [{
-        'obstacle_name': 'obs1',
-        'object_type': 'Car',
-        'gps_l': 2.032,
-        'gps_w': 1.4478,
-        'gps_h': 1.6256,
-        'l': 4.2418,
-        'w': 1.4478,
-        'h': 1.5748,
-    }]
 
     #FIXME scan from bag info in /obstacles/ topic path
     OBSTACLES = ['obs1']
@@ -384,6 +507,17 @@ def main():
         cap_rear_rtk_df.to_csv(os.path.join(dataset_outdir, 'capture_vehicle_rear_rtk.csv'), index=False)
         cap_front_rtk_df.to_csv(os.path.join(dataset_outdir, 'capture_vehicle_front_rtk.csv'), index=False)
 
+        rtk_z_offsets = [
+            np.array([0., 0., CAP_RTK_FRONT_Z]),
+            np.array([0., 0., CAP_RTK_REAR_Z])]
+        if correct > 0:
+            # Correction algorithm attempts to fit plane to rtk measurements across both capture rtk
+            # units and all obstacles. We will subtract known RTK unit mounting heights first.
+            cap_front_points = cap_front_rtk_df.as_matrix(columns=['tx', 'ty', 'tz']) - rtk_z_offsets[0]
+            cap_rear_points = cap_rear_rtk_df.as_matrix(columns=['tx', 'ty', 'tz']) - rtk_z_offsets[1]
+            point_arrays = [cap_front_points, cap_rear_points]
+            filtered_point_arrays = [filter_outliers(cap_front_points), filter_outliers(cap_rear_points)]
+
         obs_rtk_df_dict = {}
         for obs_topic, obs_rtk_dict in obstacle_rtk_dicts.items():
             obs_prefix, obs_name = obs_prefix_from_topic(obs_topic)
@@ -393,6 +527,36 @@ def main():
                 continue
             obs_rtk_df.to_csv(os.path.join(dataset_outdir, '%s_rtk.csv' % obs_prefix), index=False)
             obs_rtk_df_dict[obs_topic] = obs_rtk_df
+            if correct > 0:
+                # Use obstacle metadata to determine rtk mounting height and subtract that height
+                # from obstacle readings
+                md = next(x for x in bs.metadata if x['obstacle_name'] == obs_name)
+                if not md:
+                    print('Error: No metadata found for %s, skipping obstacle.' % obs_name)
+                    continue
+                obs_z_offset = np.array([0., 0., md['gps_h']])
+                rtk_z_offsets.append(obs_z_offset)
+                obs_points = obs_rtk_df.as_matrix(columns=['tx', 'ty', 'tz']) - obs_z_offset
+                point_arrays.append(obs_points)
+                filtered_point_arrays.append(filter_outliers(obs_points))
+
+        if correct == CORRECT_PLANE:
+            points = np.array(np.concatenate(filtered_point_arrays))
+            centroid, normal, rotation = fit_plane(
+                points, do_plot=True, dataset_outdir=dataset_outdir, name=bs.name)
+
+            def apply_correction(p, z):
+                p -= centroid
+                p = np.dot(rotation, p.T).T
+                c = np.concatenate([centroid[0:2], z[2:]])
+                p += c
+                return p
+
+            corrected_points = [apply_correction(pa, z) for pa, z in zip(point_arrays, rtk_z_offsets)]
+            cap_front_rtk_df.loc[:, ['tx', 'ty', 'tz']] = corrected_points[0]
+            cap_rear_rtk_df.loc[:, ['tx', 'ty', 'tz']] = corrected_points[1]
+            for i, o in enumerate(obstacle_rtk_dicts.items()):
+                obs_rtk_df_dict[o[0]].loc[:, ['tx', 'ty', 'tz']] = corrected_points[2 + i]
 
         if len(camera_dict['timestamp']):
             # Interpolate samples from all used sensors to camera frame timestamps
@@ -424,6 +588,10 @@ def main():
                 print('Warning: No obstacles or obstacle RTK data present. '
                       'Skipping Tracklet generation for %s.' % bs.name)
                 continue
+            if not bs.metadata:
+                print('Error: No metadata found, metadata.csv file should be with .bag files.'
+                      'Skipping tracklet generation.')
+                continue
 
             collection = TrackletCollection()
             for obs_topic in obstacle_rtk_dicts.keys():
@@ -446,30 +614,23 @@ def main():
                 plt.close(fig)
 
                 # Extract lwh and object type from CSV metadata mapping file
-                md = bs.metadata if bs.metadata else default_metadata
-                if not bs.metadata:
-                    print('Warning: Default metadata used, metadata.csv file should be with .bag files.')
-                for x in md:
-                    if x['obstacle_name'] == obs_name:
-                        mdr = x
+                md = next(x for x in bs.metadata if x['obstacle_name'] == obs_name)
 
                 obs_tracklet = Tracklet(
-                    object_type=mdr['object_type'], l=mdr['l'], w=mdr['w'], h=mdr['h'], first_frame=0)
+                    object_type=md['object_type'], l=md['l'], w=md['w'], h=md['h'], first_frame=0)
 
                 # NOTE these calculations are done in obstacle oriented coordinates. The LWH offsets from
                 # metadata specify offsets from lower left, rear, ground corner of the vehicle. Where +ve is
                 # along the respective length, width, height axis away from that point. They are converted to
                 # velodyne/ROS compatible X,Y,Z where X +ve is forward, Y +ve is left, and Z +ve is up.
-                lrg_to_gps = [mdr['gps_l'], -mdr['gps_w'], mdr['gps_h']]
-                lrg_to_centroid = [mdr['l'] / 2., -mdr['w'] / 2., mdr['h'] / 2.]
+                lrg_to_gps = [md['gps_l'], -md['gps_w'], md['gps_h']]
+                lrg_to_centroid = [md['l'] / 2., -md['w'] / 2., md['h'] / 2.]
                 gps_to_centroid = np.subtract(lrg_to_centroid, lrg_to_gps)
 
                 # Convert NED RTK coords of obstacle to capture vehicle body frame relative coordinates
                 obs_tracklet.poses = estimate_obstacle_poses(
                     cap_front_rtk=cap_front_rtk_interp_rec,
-                    #cap_front_gps_offset=[0.0, 0.0, 0.0],
                     cap_rear_rtk=cap_rear_rtk_interp_rec,
-                    #cap_rear_gps_offset=[0.0, 0.0, 0.0],
                     obs_rear_rtk=obs_interp.to_dict(orient='records'),
                     obs_rear_gps_offset=gps_to_centroid,
                 )
