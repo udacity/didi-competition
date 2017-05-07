@@ -27,6 +27,12 @@ Note that when passing paths via -i and -o through Docker THE PATHS MUST BE ABSO
 
 To run bag_to_kitti.py locally, the same -i -o arguments can be used and additional arguments listed in the help (-h) can also be used directly without passing via --. Any valid path, relative or absolute works when calling the script directly.
     
+#### Other bag_to_kitti.py command options
+
+(-t, --ts_src) Timestamp source selection. The default bag_to_kitti behaviour uses the ROS msg header timestamp (publish) for all timing and synchronization. For Dataset 2, the obstacle vehicle were recorded on node with different timebase and not corrected. It is better to use the bag record times for obstacle data. Use the command line '-t obs_rec' to enable this.
+
+(-c, --correct) RTK coordinate correction. This option enables an algorithm that attempts to determine the ground plane from combination of all RTK unit measurements and corrects by leveling that plane. This works well in many datasets, especially those with reasonable X and Y spread and both vehicles driving on the same slope, but not all. Use '-c plane' to enable. Other correction techniques may be added in the future.
+
 ### evaluate_tracklets.py -- Evaluate predicted Tracklet against ground truth
 
 The evaluate_tracklets script does not depend on a ROS environment so it's less relevant to run in the Docker environment.
