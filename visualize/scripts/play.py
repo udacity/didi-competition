@@ -93,7 +93,6 @@ class BoxSubPub():
         for i, f in enumerate(self.frame_map[frame_index]):
             trans = f.trans
             rotq = f.rotq
-            scale = f.size
             h, w, l = f.size
             color = kelly_colors_list[i % len(kelly_colors_list)]
 
@@ -105,7 +104,7 @@ class BoxSubPub():
                     color)
                 self._publish_marker(
                     Marker.ARROW, 1, msg.header.stamp,
-                    trans, rotq, [l/2, w/2, h],
+                    trans, rotq, [l/2, w/2, h/2],
                     color)    
             else:
                 #FIXME change Marker types based on object type (ie car vs pedestrian)
@@ -115,7 +114,7 @@ class BoxSubPub():
                     color)
                 self._publish_marker(
                     Marker.ARROW, 1, msg.header.stamp,
-                    trans, rotq, [l/2, w/2, h],
+                    trans, rotq, [l/2, w/2, h/2],
                     color)
 
 
