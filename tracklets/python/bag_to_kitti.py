@@ -3,13 +3,10 @@
 """
 
 from __future__ import print_function
-from cv_bridge import CvBridge, CvBridgeError
 from collections import defaultdict
 import os
 import sys
-import cv2
 import math
-import imghdr
 import argparse
 import functools
 import matplotlib
@@ -47,43 +44,15 @@ def get_outdir(base_dir, name=''):
     return outdir
 
 
+def obs_name_from_topic(topic):
+    return topic.split('/')[2]
+
+
 def obs_prefix_from_topic(topic):
     words = topic.split('/')
-    start, end = (1, 4) if topic.startswith(OBJECTS_TOPIC_ROOT) else (1, 3)
-    prefix = '_'.join(words[start:end])
-    name = words[2] if topic.startswith(OBJECTS_TOPIC_ROOT) else words[1]
+    prefix = '_'.join(words[1:4])
+    name = words[2]
     return prefix, name
-
-
-def check_format(data):
-    img_fmt = imghdr.what(None, h=data)
-    return 'jpg' if img_fmt == 'jpeg' else img_fmt
-
-
-def write_image(bridge, outdir, msg, fmt='png'):
-    results = {}
-    image_filename = os.path.join(outdir, str(msg.header.stamp.to_nsec()) + '.' + fmt)
-    try:
-        if hasattr(msg, 'format') and 'compressed' in msg.format:
-            buf = np.ndarray(shape=(1, len(msg.data)), dtype=np.uint8, buffer=msg.data)
-            cv_image = cv2.imdecode(buf, cv2.IMREAD_ANYCOLOR)
-            if cv_image.shape[2] != 3:
-                print("Invalid image %s" % image_filename)
-                return results
-            results['height'] = cv_image.shape[0]
-            results['width'] = cv_image.shape[1]
-            # Avoid re-encoding if we don't have to
-            if check_format(msg.data) == fmt:
-                buf.tofile(image_filename)
-            else:
-                cv2.imwrite(image_filename, cv_image)
-        else:
-            cv_image = bridge.imgmsg_to_cv2(msg, "bgr8")
-            cv2.imwrite(image_filename, cv_image)
-    except CvBridgeError as e:
-        print(e)
-    results['filename'] = image_filename
-    return results
 
 
 def camera2dict(timestamp, msg, write_results, camera_dict):
@@ -113,8 +82,8 @@ def rtk2dict(timestamp, msg, rtk_dict):
         msg.pose.pose.orientation.z,
         msg.pose.pose.orientation.w)
     rot_xyz = rotq.GetRPY()
-    rtk_dict["rx"].append(0.0) #rot_xyz[0]
-    rtk_dict["ry"].append(0.0) #rot_xyz[1]
+    rtk_dict["rx"].append(0.0)
+    rtk_dict["ry"].append(0.0)
     rtk_dict["rz"].append(rot_xyz[2])
 
 
@@ -140,32 +109,6 @@ def list_to_vect(li):
 def frame_to_dict(frame):
     r, p, y = frame.M.GetRPY()
     return dict(tx=frame.p[0], ty=frame.p[1], tz=frame.p[2], rx=r, ry=p, rz=y)
-
-
-def get_obstacle_pos(
-        front,
-        rear,
-        obstacle,
-        velodyne_to_front,
-        gps_to_centroid):
-    front_v = dict_to_vect(front)
-    rear_v = dict_to_vect(rear)
-    obs_v = dict_to_vect(obstacle)
-
-    yaw = get_yaw(front_v, rear_v)
-    rot_z = kd.Rotation.RotZ(-yaw)
-
-    diff = obs_v - front_v
-    res = rot_z * diff
-    res += list_to_vect(velodyne_to_front)
-
-    # FIXME the gps_to_centroid offset of the obstacle should be rotated by
-    # the obstacle's yaw. Unfortunately the obstacle's pose is unknown at this
-    # point so we will assume obstacle is axis aligned with capture vehicle
-    # for now.
-    res += list_to_vect(gps_to_centroid)
-
-    return frame_to_dict(kd.Frame(kd.Rotation(), res))
 
 
 def interpolate_to_camera(camera_df, other_dfs, filter_cols=[]):
@@ -195,23 +138,50 @@ def interpolate_to_camera(camera_df, other_dfs, filter_cols=[]):
     return filtered
 
 
-def estimate_obstacle_poses(
-    cap_front_rtk,
-    cap_rear_rtk,
-    obs_rear_rtk,
-    obs_rear_gps_offset,  # offset along [l, w, h] dim of car, in obstacle relative coords
-):
-    # offsets are all [l, w, h] lists (or tuples)
-    assert(len(obs_rear_gps_offset) == 3)
-    # all coordinate records should be interpolated to same sample base at this point
-    assert len(cap_front_rtk) == len(cap_rear_rtk) == len(obs_rear_rtk)
+def get_obstacle_pose(
+        cap_front,
+        cap_rear,
+        obs_front,
+        obs_rear,
+        obs_gps_to_centroid,
+        velodyne_to_front,
+        cap_yaw_error_rad=0,
+        cap_pitch_error_rad=0):
 
-    velo_to_front = [-1.0922, 0, -0.0508]
-    rtk_coords = zip(cap_front_rtk, cap_rear_rtk, obs_rear_rtk)
-    output_poses = [
-        get_obstacle_pos(c[0], c[1], c[2], velo_to_front, obs_rear_gps_offset) for c in rtk_coords]
+    # calculate capture yaw in ENU frame and setup correction rotation
+    cap_front_v = dict_to_vect(cap_front)
+    cap_rear_v = dict_to_vect(cap_rear)
+    cap_yaw = get_yaw(cap_front_v, cap_rear_v)
+    cap_yaw += cap_yaw_error_rad
+    rot_cap = kd.Rotation.EulerZYX(-cap_yaw, -cap_pitch_error_rad, 0)
 
-    return output_poses
+    obs_rear_v = dict_to_vect(obs_rear)
+    if obs_front:
+        obs_front_v = dict_to_vect(obs_front)
+        obs_yaw = get_yaw(obs_front_v, obs_rear_v)
+        # use the front gps as the obstacle reference point if it exists as it's closers
+        # to the centroid and mounting metadata seems more reliable
+        cap_to_obs = obs_front_v - cap_front_v
+    else:
+        cap_to_obs = obs_rear_v - cap_front_v
+
+    # transform capture car to obstacle vector into capture car velodyne lidar frame
+    res = rot_cap * cap_to_obs
+    res += list_to_vect(velodyne_to_front)
+
+    # obs_gps_to_centroid is offset for front gps if it exists, otherwise rear
+    obs_gps_to_centroid_v = list_to_vect(obs_gps_to_centroid)
+    if obs_front:
+        # if we have both front + rear RTK calculate an obstacle yaw and use it for centroid offset
+        obs_rot_z = kd.Rotation.RotZ(obs_yaw - cap_yaw)
+        centroid_offset = obs_rot_z * obs_gps_to_centroid_v
+    else:
+        # if no obstacle yaw calculation possible, treat rear RTK as centroid and offset in Z only
+        obs_rot_z = kd.Rotation()
+        centroid_offset = kd.Vector(0, 0, obs_gps_to_centroid_v[2])
+    res += centroid_offset
+
+    return frame_to_dict(kd.Frame(obs_rot_z, res))
 
 
 def check_oneof_topics_present(topic_map, name, topics):
@@ -341,6 +311,16 @@ def fit_plane(points, do_plot=True, dataset_outdir='', name='', debug=True):
     return centroid, norm, rot_m
 
 
+def extract_metadata(md, obs_name):
+    md = next(x for x in md if x['obstacle_name'] == obs_name)
+    if 'gps_l' in md:
+        # make old rear RTK only obstacle metadata compatible with new
+        md['rear_gps_l'] = md['gps_l']
+        md['rear_gps_w'] = md['gps_w']
+        md['rear_gps_h'] = md['gps_h']
+    return md
+
+
 def main():
     parser = argparse.ArgumentParser(description='Convert rosbag to images and csv.')
     parser.add_argument('-o', '--outdir', type=str, nargs='?', default='/output',
@@ -353,10 +333,12 @@ def main():
         help="""Timestamp source. 'pub'=capture node publish time, 'rec'=receiver bag record time,
         'obs_rec'=record time for obstacles topics only, pub for others. Default='pub'""")
     parser.add_argument('-c', '--correct', type=str, nargs='?', default='',
-        help="""Correction method. ''=no correction, 'plane'=fit plane to RTK coords and level.
-        Default=''""")
+        help="""Correction method. ''=no correction, 'plane'=fit plane to RTK coords and level. Default=''""")
+    parser.add_argument('--yaw_err', type=float, nargs='?', default='0.0',
+        help="""Amount in degrees to compensate for RTK based yaw measurement. Default=0.0'""")
+    parser.add_argument('--pitch_err', type=float, nargs='?', default='0.0',
+        help="""Amount in degrees to compensate for RTK based yaw measurement. Default=0.0.""")
     parser.add_argument('-m', dest='msg_only', action='store_true', help='Messages only, no images')
-    parser.add_argument('-d', dest='debug', action='store_true', help='Debug print enable')
     parser.set_defaults(msg_only=False)
     parser.set_defaults(debug=False)
     args = parser.parse_args()
@@ -372,21 +354,22 @@ def main():
     correct = CORRECT_NONE
     if args.correct == 'plane':
         correct = CORRECT_PLANE
-    elif args.correct == 'basic':
-        correct = CORRECT_BASIC
+    yaw_err = args.yaw_err
+    pitch_err = args.pitch_err
     msg_only = args.msg_only
-    debug_print = args.debug
-    bridge = CvBridge()
+    image_bridge = ImageBridge()
 
     include_images = False if msg_only else True
 
     filter_topics = CAMERA_TOPICS + CAP_FRONT_RTK_TOPICS + CAP_REAR_RTK_TOPICS \
         + CAP_FRONT_GPS_TOPICS + CAP_REAR_GPS_TOPICS
 
-    #FIXME scan from bag info in /obstacles/ topic path
+    # FIXME scan from bag info in /obstacles/ topic path
     OBSTACLES = ['obs1']
-    OBSTACLE_RTK_TOPICS = [OBJECTS_TOPIC_ROOT + '/' + x + '/rear/gps/rtkfix' for x in OBSTACLES]
-    filter_topics += OBSTACLE_RTK_TOPICS
+    OBS_FRONT_RTK_TOPICS = [OBJECTS_TOPIC_ROOT + '/' + x + '/front/gps/rtkfix' for x in OBSTACLES]
+    OBS_REAR_RTK_TOPICS = [OBJECTS_TOPIC_ROOT + '/' + x + '/rear/gps/rtkfix' for x in OBSTACLES]
+    filter_topics += OBS_FRONT_RTK_TOPICS
+    filter_topics += OBS_REAR_RTK_TOPICS
 
     bagsets = find_bagsets(indir, filter_topics=filter_topics, set_per_file=True, metadata_filename='metadata.csv')
     if not bagsets:
@@ -414,7 +397,7 @@ def main():
         cap_front_rtk_dict = defaultdict(list)
 
         # For the obstacles, keep track of rtk values for each one in a dictionary (key == topic)
-        obstacle_rtk_dicts = {k: defaultdict(list) for k in OBSTACLE_RTK_TOPICS}
+        obstacle_rtk_dicts = {k: {'front': defaultdict(list), 'rear': defaultdict(list)} for k in OBSTACLES}
 
         dataset_outdir = os.path.join(base_outdir, "%s" % bs.name)
         get_outdir(dataset_outdir)
@@ -428,16 +411,13 @@ def main():
             timestamp = msg.header.stamp.to_nsec()  # default to publish timestamp in message header
             if ts_src == TS_SRC_REC:
                 timestamp = ts_recorded.to_nsec()
-            elif ts_src == TS_SRC_OBS_REC and topic in OBSTACLE_RTK_TOPICS:
+            elif ts_src == TS_SRC_OBS_REC and topic in OBS_REAR_RTK_TOPICS:
                 timestamp = ts_recorded.to_nsec()
 
             if topic in CAMERA_TOPICS:
-                if debug_print:
-                    print("%s_camera %d" % (topic[1], timestamp))
-
                 write_results = {}
                 if include_images:
-                    write_results = write_image(bridge, camera_outdir, msg, fmt=img_format)
+                    write_results = image_bridge.write_image(camera_outdir, msg, fmt=img_format)
                     write_results['filename'] = os.path.relpath(write_results['filename'], dataset_outdir)
                 camera2dict(timestamp, msg, write_results, camera_dict)
                 stats['img_count'] += 1
@@ -459,8 +439,14 @@ def main():
                 gps2dict(timestamp, msg, cap_front_gps_dict)
                 stats['msg_count'] += 1
 
-            elif topic in OBSTACLE_RTK_TOPICS:
-                rtk2dict(timestamp, msg, obstacle_rtk_dicts[topic])
+            elif topic in OBS_REAR_RTK_TOPICS:
+                name = obs_name_from_topic(topic)
+                rtk2dict(timestamp, msg, obstacle_rtk_dicts[name]['rear'])
+                stats['msg_count'] += 1
+
+            elif topic in OBS_FRONT_RTK_TOPICS:
+                name = obs_name_from_topic(topic)
+                rtk2dict(timestamp, msg, obstacle_rtk_dicts[name]['front'])
                 stats['msg_count'] += 1
 
             else:
@@ -485,29 +471,29 @@ def main():
         sys.stdout.flush()
 
         camera_df = pd.DataFrame(data=camera_dict, columns=camera_cols)
-        cap_rear_gps_df = pd.DataFrame(data=cap_rear_gps_dict, columns=gps_cols)
-        cap_front_gps_df = pd.DataFrame(data=cap_front_gps_dict, columns=gps_cols)
-        cap_rear_rtk_df = pd.DataFrame(data=cap_rear_rtk_dict, columns=rtk_cols)
+        if include_images:
+            camera_df.to_csv(os.path.join(dataset_outdir, 'capture_vehicle_camera.csv'), index=False)
+
+        def init_and_save(data_dict, cols, filename):
+            df = pd.DataFrame(data=data_dict, columns=cols)
+            if len(df.index):
+                df.to_csv(os.path.join(dataset_outdir, filename), index=False)
+            return df
+
+        cap_rear_gps_df = init_and_save(cap_rear_gps_dict, gps_cols, 'capture_vehicle_rear_gps.csv')
+        cap_front_gps_df = init_and_save(cap_front_gps_dict, gps_cols, 'capture_vehicle_front_gps.csv')
+        cap_rear_rtk_df =init_and_save(cap_rear_rtk_dict, rtk_cols, 'capture_vehicle_rear_rtk.csv')
+        cap_front_rtk_df = init_and_save(cap_front_rtk_dict,rtk_cols, 'capture_vehicle_front_rtk.csv')
         if not len(cap_rear_rtk_df.index):
             print('Error: No capture vehicle rear RTK entries exist.'
                   'Skipping bag %s.' % bag.name)
             continue
-        cap_front_rtk_df = pd.DataFrame(data=cap_front_rtk_dict, columns=rtk_cols)
         if not len(cap_rear_rtk_df.index):
             print('Error: No capture vehicle front RTK entries exist.'
                   'Skipping bag %s.' % bag.name)
             continue
 
-        if include_images:
-            camera_df.to_csv(os.path.join(dataset_outdir, 'capture_vehicle_camera.csv'), index=False)
-        cap_rear_gps_df.to_csv(os.path.join(dataset_outdir, 'capture_vehicle_rear_gps.csv'), index=False)
-        cap_front_gps_df.to_csv(os.path.join(dataset_outdir, 'capture_vehicle_front_gps.csv'), index=False)
-        cap_rear_rtk_df.to_csv(os.path.join(dataset_outdir, 'capture_vehicle_rear_rtk.csv'), index=False)
-        cap_front_rtk_df.to_csv(os.path.join(dataset_outdir, 'capture_vehicle_front_rtk.csv'), index=False)
-
-        rtk_z_offsets = [
-            np.array([0., 0., CAP_RTK_FRONT_Z]),
-            np.array([0., 0., CAP_RTK_REAR_Z])]
+        rtk_z_offsets = [np.array([0., 0., CAP_RTK_FRONT_Z]), np.array([0., 0., CAP_RTK_REAR_Z])]
         if correct > 0:
             # Correction algorithm attempts to fit plane to rtk measurements across both capture rtk
             # units and all obstacles. We will subtract known RTK unit mounting heights first.
@@ -517,26 +503,33 @@ def main():
             filtered_point_arrays = [filter_outliers(cap_front_points), filter_outliers(cap_rear_points)]
 
         obs_rtk_df_dict = {}
-        for obs_topic, obs_rtk_dict in obstacle_rtk_dicts.items():
-            obs_prefix, obs_name = obs_prefix_from_topic(obs_topic)
-            obs_rtk_df = pd.DataFrame(data=obs_rtk_dict, columns=rtk_cols)
-            if not len(obs_rtk_df.index):
+        for obs_name, obs_rtk_dict in obstacle_rtk_dicts.items():
+            obs_rear_rtk_df = init_and_save(obs_rtk_dict['rear'], rtk_cols, '%s_rear_rtk.csv' % obs_name)
+            obs_front_rtk_df = init_and_save(obs_rtk_dict['front'], rtk_cols, '%s_front_rtk.csv' % obs_name)
+            if not len(obs_rear_rtk_df.index):
                 print('Warning: No entries for obstacle %s in %s. Skipping.' % (obs_name, bs.name))
                 continue
-            obs_rtk_df.to_csv(os.path.join(dataset_outdir, '%s_rtk.csv' % obs_prefix), index=False)
-            obs_rtk_df_dict[obs_topic] = obs_rtk_df
+            obs_rtk_df_dict[obs_name] = {'rear': obs_rear_rtk_df}
+            if len(obs_front_rtk_df.index):
+                obs_rtk_df_dict[obs_name]['front'] = obs_front_rtk_df
             if correct > 0:
                 # Use obstacle metadata to determine rtk mounting height and subtract that height
                 # from obstacle readings
-                md = next(x for x in bs.metadata if x['obstacle_name'] == obs_name)
+                md = extract_metadata(bs.metadata, obs_name)
                 if not md:
                     print('Error: No metadata found for %s, skipping obstacle.' % obs_name)
                     continue
-                obs_z_offset = np.array([0., 0., md['gps_h']])
+                obs_z_offset = np.array([0., 0., md['rear_gps_h']])
                 rtk_z_offsets.append(obs_z_offset)
-                obs_points = obs_rtk_df.as_matrix(columns=['tx', 'ty', 'tz']) - obs_z_offset
-                point_arrays.append(obs_points)
-                filtered_point_arrays.append(filter_outliers(obs_points))
+                obs_rear_points = obs_rear_rtk_df.as_matrix(columns=['tx', 'ty', 'tz']) - obs_z_offset
+                point_arrays.append(obs_rear_points)
+                filtered_point_arrays.append(filter_outliers(obs_rear_points))
+                if len(obs_front_rtk_df.index):
+                    obs_z_offset = np.array([0., 0., md['front_gps_h']])
+                    rtk_z_offsets.append(obs_z_offset)
+                    obs_front_points = obs_front_rtk_df.as_matrix(columns=['tx', 'ty', 'tz']) - obs_z_offset
+                    point_arrays.append(obs_front_points)
+                    filtered_point_arrays.append(filter_outliers(obs_front_points))
 
         if correct == CORRECT_PLANE:
             points = np.array(np.concatenate(filtered_point_arrays))
@@ -553,34 +546,34 @@ def main():
             corrected_points = [apply_correction(pa, z) for pa, z in zip(point_arrays, rtk_z_offsets)]
             cap_front_rtk_df.loc[:, ['tx', 'ty', 'tz']] = corrected_points[0]
             cap_rear_rtk_df.loc[:, ['tx', 'ty', 'tz']] = corrected_points[1]
-            for i, o in enumerate(obstacle_rtk_dicts.items()):
-                obs_rtk_df_dict[o[0]].loc[:, ['tx', 'ty', 'tz']] = corrected_points[2 + i]
+            pts_idx = 2
+            for obs_name in obs_rtk_df_dict.keys():
+                obs_rtk_df_dict[obs_name]['rear'].loc[:, ['tx', 'ty', 'tz']] = corrected_points[pts_idx]
+                pts_idx += 1
+                if 'front' in obs_rtk_df_dict[obs_name]:
+                    obs_rtk_df_dict[obs_name]['front'].loc[:, ['tx', 'ty', 'tz']] = corrected_points[pts_idx]
+                    pts_idx += 1
 
         if len(camera_dict['timestamp']):
             # Interpolate samples from all used sensors to camera frame timestamps
             camera_df['timestamp'] = pd.to_datetime(camera_df['timestamp'])
             camera_df.set_index(['timestamp'], inplace=True)
             camera_df.index.rename('index', inplace=True)
-
             camera_index_df = pd.DataFrame(index=camera_df.index)
 
-            cap_rear_gps_interp = interpolate_to_camera(camera_index_df, cap_rear_gps_df, filter_cols=gps_cols)
-            cap_rear_gps_interp.to_csv(
-                os.path.join(dataset_outdir, 'capture_vehicle_rear_gps_interp.csv'), header=True)
+            def interpolate_and_save(df, cols, filename):
+                interp_df = interpolate_to_camera(camera_index_df, df, filter_cols=cols)
+                interp_df.to_csv(os.path.join(dataset_outdir, filename), header=True)
+                return interp_df
 
-            cap_front_gps_interp = interpolate_to_camera(camera_index_df, cap_front_gps_df, filter_cols=gps_cols)
-            cap_front_gps_interp.to_csv(
-                os.path.join(dataset_outdir, 'capture_vehicle_front_gps_interp.csv'), header=True)
-
-            cap_rear_rtk_interp = interpolate_to_camera(camera_index_df, cap_rear_rtk_df, filter_cols=rtk_cols)
-            cap_rear_rtk_interp.to_csv(
-                os.path.join(dataset_outdir, 'capture_vehicle_rear_rtk_interp.csv'), header=True)
-            cap_rear_rtk_interp_rec = cap_rear_rtk_interp.to_dict(orient='records')
-
-            cap_front_rtk_interp = interpolate_to_camera(camera_index_df, cap_front_rtk_df, filter_cols=rtk_cols)
-            cap_front_rtk_interp.to_csv(
-                os.path.join(dataset_outdir, 'capture_vehicle_front_rtk_interp.csv'), header=True)
-            cap_front_rtk_interp_rec = cap_front_rtk_interp.to_dict(orient='records')
+            interpolate_and_save(
+                cap_rear_gps_df, gps_cols, 'capture_vehicle_rear_gps_interp.csv')
+            interpolate_and_save(
+                cap_front_gps_df, gps_cols, 'capture_vehicle_front_gps_interp.csv')
+            cap_rear_rtk_interp = interpolate_and_save(
+                cap_rear_rtk_df, rtk_cols, 'capture_vehicle_rear_rtk_interp.csv')
+            cap_front_rtk_interp = interpolate_and_save(
+                cap_front_rtk_df, rtk_cols, 'capture_vehicle_front_rtk_interp.csv')
 
             if not obs_rtk_df_dict:
                 print('Warning: No obstacles or obstacle RTK data present. '
@@ -591,28 +584,38 @@ def main():
                       'Skipping tracklet generation.')
                 continue
 
+            cap_front_rtk_rec = cap_front_rtk_interp.to_dict(orient='records')
+            cap_rear_rtk_rec = cap_rear_rtk_interp.to_dict(orient='records')
             collection = TrackletCollection()
-            for obs_topic in obstacle_rtk_dicts.keys():
-                obs_rtk_df = obs_rtk_df_dict[obs_topic]
-                obs_interp = interpolate_to_camera(camera_index_df, obs_rtk_df, filter_cols=rtk_cols)
-                obs_prefix, obs_name = obs_prefix_from_topic(obs_topic)
-                obs_interp.to_csv(
-                    os.path.join(dataset_outdir, '%s_rtk_interpolated.csv' % obs_prefix), header=True)
+            for obs_name in obstacle_rtk_dicts.keys():
+                obs_rear_interp = interpolate_and_save(
+                    obs_rtk_df_dict[obs_name]['rear'], rtk_cols, '%s_rear_rtk_interpolated.csv' % obs_name)
+                obs_rear_rec = obs_rear_interp.to_dict(orient='records')
+                if 'front' in obs_rtk_df_dict[obs_name]:
+                    obs_front_interp = interpolate_and_save(
+                        obs_rtk_df_dict[obs_name]['front'], rtk_cols, '%s_rear_rtk_interpolated.csv' % obs_name)
+                    obs_front_rec = obs_front_interp.to_dict(orient='records')
+                else:
+                    obs_front_rec = {}
 
                 # Plot obstacle and front/rear rtk paths in absolute RTK ENU coords
                 fig = plt.figure()
                 plt.plot(
-                    obs_interp['tx'].tolist(),
-                    obs_interp['ty'].tolist(),
+                    obs_rear_interp['tx'].tolist(),
+                    obs_rear_interp['ty'].tolist(),
                     cap_front_rtk_interp['tx'].tolist(),
                     cap_front_rtk_interp['ty'].tolist(),
                     cap_rear_rtk_interp['tx'].tolist(),
                     cap_rear_rtk_interp['ty'].tolist())
+                if 'front' in obs_rtk_df_dict[obs_name]:
+                    plt.plot(
+                        obs_front_interp['tx'].tolist(),
+                        obs_front_interp['ty'].tolist())
                 fig.savefig(os.path.join(dataset_outdir, '%s-%s-plot.png' % (bs.name, obs_name)))
                 plt.close(fig)
 
                 # Extract lwh and object type from CSV metadata mapping file
-                md = next(x for x in bs.metadata if x['obstacle_name'] == obs_name)
+                md = extract_metadata(bs.metadata, obs_name)
 
                 obs_tracklet = Tracklet(
                     object_type=md['object_type'], l=md['l'], w=md['w'], h=md['h'], first_frame=0)
@@ -621,17 +624,33 @@ def main():
                 # metadata specify offsets from lower left, rear, ground corner of the vehicle. Where +ve is
                 # along the respective length, width, height axis away from that point. They are converted to
                 # velodyne/ROS compatible X,Y,Z where X +ve is forward, Y +ve is left, and Z +ve is up.
-                lrg_to_gps = [md['gps_l'], -md['gps_w'], md['gps_h']]
                 lrg_to_centroid = [md['l'] / 2., -md['w'] / 2., md['h'] / 2.]
-                gps_to_centroid = np.subtract(lrg_to_centroid, lrg_to_gps)
+                if 'front' in obs_rtk_df_dict[obs_name]:
+                    lrg_to_front_gps = [md['front_gps_l'], -md['front_gps_w'], md['front_gps_h']]
+                    gps_to_centroid = np.subtract(lrg_to_centroid, lrg_to_front_gps)
+                else:
+                    lrg_to_rear_gps = [md['rear_gps_l'], -md['rear_gps_w'], md['rear_gps_h']]
+                    gps_to_centroid = np.subtract(lrg_to_centroid, lrg_to_rear_gps)
 
-                # Convert NED RTK coords of obstacle to capture vehicle body frame relative coordinates
-                obs_tracklet.poses = estimate_obstacle_poses(
-                    cap_front_rtk=cap_front_rtk_interp_rec,
-                    cap_rear_rtk=cap_rear_rtk_interp_rec,
-                    obs_rear_rtk=obs_interp.to_dict(orient='records'),
-                    obs_rear_gps_offset=gps_to_centroid,
-                )
+                # From capture vehicle 'GPS FRONT' - 'LIDAR' in
+                # https://github.com/udacity/didi-competition/blob/master/mkz-description/mkz.urdf.xacro
+                velo_to_front = [-1.0922, 0, -0.0508]
+
+                # This would be better handled by more accurate GPS unit mounting/measurement on capture vehicle
+                yaw_err_rad = yaw_err * np.pi / 180
+                pitch_err_rad = pitch_err * np.pi / 180
+
+                # Convert ENU RTK coords of obstacle to capture vehicle body frame relative coordinates
+                if obs_front_rec:
+                    rtk_coords = zip(cap_front_rtk_rec, cap_rear_rtk_rec, obs_front_rec, obs_rear_rec)
+                    obs_tracklet.poses = [get_obstacle_pose(
+                        c[0], c[1], c[2], c[3],
+                        gps_to_centroid, velo_to_front, yaw_err_rad, pitch_err_rad) for c in rtk_coords]
+                else:
+                    rtk_coords = zip(cap_front_rtk_rec, cap_rear_rtk_rec, obs_rear_rec)
+                    obs_tracklet.poses = [get_obstacle_pose(
+                        c[0], c[1], {}, c[2],
+                        gps_to_centroid, velo_to_front, yaw_err_rad, pitch_err_rad) for c in rtk_coords]
 
                 collection.tracklets.append(obs_tracklet)
                 # end for obs_topic loop

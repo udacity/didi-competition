@@ -10,14 +10,52 @@ import sys
 import fnmatch
 import subprocess
 import cv2
+import imghdr
 import yaml
 import rosbag
 import datetime
 import pandas as pd
+import numpy as np
 
 
 SEC_PER_NANOSEC = 1e9
 MIN_PER_NANOSEC = 6e10
+
+
+def check_image_format(data):
+    img_fmt = imghdr.what(None, h=data)
+    return 'jpg' if img_fmt == 'jpeg' else img_fmt
+
+
+class ImageBridge:
+
+    def __init__(self):
+        self.bridge = CvBridge()
+
+    def write_image(self, outdir, msg, fmt='png'):
+        results = {}
+        image_filename = os.path.join(outdir, str(msg.header.stamp.to_nsec()) + '.' + fmt)
+        try:
+            if hasattr(msg, 'format') and 'compressed' in msg.format:
+                buf = np.ndarray(shape=(1, len(msg.data)), dtype=np.uint8, buffer=msg.data)
+                cv_image = cv2.imdecode(buf, cv2.IMREAD_ANYCOLOR)
+                if cv_image.shape[2] != 3:
+                    print("Invalid image %s" % image_filename)
+                    return results
+                results['height'] = cv_image.shape[0]
+                results['width'] = cv_image.shape[1]
+                # Avoid re-encoding if we don't have to
+                if check_image_format(msg.data) == fmt:
+                    buf.tofile(image_filename)
+                else:
+                    cv2.imwrite(image_filename, cv_image)
+            else:
+                cv_image = self.bridge.imgmsg_to_cv2(msg, "bgr8")
+                cv2.imwrite(image_filename, cv_image)
+        except CvBridgeError as e:
+            print(e)
+        results['filename'] = image_filename
+        return results
 
 
 def get_bag_info(bag_file, nanosec=True):
