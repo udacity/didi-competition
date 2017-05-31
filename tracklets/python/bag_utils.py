@@ -182,6 +182,16 @@ class BagSet(object):
     def __repr__(self):
         return "start: %s, end: %s, topic_map: %s" % (self.start_time, self.end_time, str(self.topic_map))
 
+def get_set_name(directory, file_path):
+    # Preserve file path after directory. The subdirectories in the output will mirror the input.
+    if file_path.startswith(directory):
+        file_path = file_path[len(directory):]
+
+    # Remove leading forward slashes so that joined output paths work.
+    while file_path.startswith('/'):
+        file_path = file_path[1:]
+
+    return os.path.splitext(file_path)[0]
 
 def find_bagsets(
         directory,
@@ -203,7 +213,7 @@ def find_bagsets(
         if matched_files:
             if set_per_file:
                 for f in matched_files:
-                    set_name = os.path.splitext(os.path.basename(f))[0]
+                    set_name = get_set_name(directory, f)
                     bag_set = BagSet(set_name, [f], filter_topics, metadata_path)
                     sets.append(bag_set)
             else:
