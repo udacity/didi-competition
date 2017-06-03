@@ -10,3 +10,5 @@ CAP_FRONT_GPS_TOPICS = ["/capture_vehicle/front/gps/fix", "/objects/capture_vehi
 CAP_FRONT_RTK_TOPICS = ["/capture_vehicle/front/gps/rtkfix", "/objects/capture_vehicle/front/gps/rtkfix"]
 
 OBJECTS_TOPIC_ROOT = "/objects"
+
+TF_TOPIC = "/tf"

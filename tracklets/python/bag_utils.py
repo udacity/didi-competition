@@ -22,6 +22,13 @@ SEC_PER_NANOSEC = 1e9
 MIN_PER_NANOSEC = 6e10
 
 
+def get_outdir(base_dir, name=''):
+    outdir = os.path.join(base_dir, name)
+    if not os.path.exists(outdir):
+        os.makedirs(outdir)
+    return outdir
+
+
 def check_image_format(data):
     img_fmt = imghdr.what(None, h=data)
     return 'jpg' if img_fmt == 'jpeg' else img_fmt
@@ -103,7 +110,7 @@ JOIN_THRESH_NS = 10 * MIN_PER_NANOSEC
 
 class BagSet(object):
 
-    def __init__(self, name, bagfiles, filter_topics, metadata_path=''):
+    def __init__(self, name, bagfiles, filter_topics, metadata_path='', prefix_path=''):
         self.name = name
         self.files = sorted(bagfiles)
         self.infos = []
@@ -116,6 +123,7 @@ class BagSet(object):
                 self._load_metadata(metadata_path)
             else:
                 print('Warning: Metadata filename %s specified but not found' % metadata_path)
+        self.prefix_path = prefix_path
         self._process_infos(filter_topics)
 
     def _load_metadata(self, metadata_path):
@@ -182,6 +190,11 @@ class BagSet(object):
     def __repr__(self):
         return "start: %s, end: %s, topic_map: %s" % (self.start_time, self.end_time, str(self.topic_map))
 
+    def get_name(self, unique=False):
+        if unique and self.prefix_path:
+            return '-'.join([self.prefix_path.replace('/', '_'), self.name])
+        return self.name
+
 
 def find_bagsets(
         directory,
@@ -193,7 +206,6 @@ def find_bagsets(
     metadata_path = ''
     for root, dirs, files in os.walk(directory):
         matched_files = []
-        #print(files)
         for basename in files:
             if fnmatch.fnmatch(basename, pattern):
                 filename = os.path.join(root, basename)
@@ -203,12 +215,17 @@ def find_bagsets(
         if matched_files:
             if set_per_file:
                 for f in matched_files:
-                    set_name = os.path.splitext(os.path.basename(f))[0]
-                    bag_set = BagSet(set_name, [f], filter_topics, metadata_path)
+                    froot, fbase = os.path.split(f)
+                    relpath = os.path.relpath(froot, directory)
+                    if relpath == '.' or relpath == '..':
+                        relpath = ''
+                    set_name = os.path.splitext(fbase)[0]
+                    bag_set = BagSet(
+                        set_name, [f], filter_topics, metadata_path=metadata_path, prefix_path=relpath)
                     sets.append(bag_set)
             else:
                 set_name = os.path.relpath(root, directory)
-                bag_set = BagSet(set_name, matched_files, filter_topics, metadata_path)
+                bag_set = BagSet(set_name, matched_files, filter_topics, metadata_path=metadata_path)
                 sets.append(bag_set)
     return sets
 
