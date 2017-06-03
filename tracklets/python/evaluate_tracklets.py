@@ -205,7 +205,7 @@ def get_vol_method(object_type, override=''):
     if object_type == 'Pedestrian':
         return 'cylinder'
     else:
-        return 'bbox'
+        return 'box'
 
 
 def generate_obstacles(tracklets, override_size=None):
