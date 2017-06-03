@@ -6,6 +6,7 @@ import rosbag
 import argparse
 import os
 import sys
+import signal
 import subprocess
 import colorsys
 import tf2_ros
@@ -125,14 +126,24 @@ class BoxSubPub():
                     color)    
             else:
                 #FIXME change Marker types based on object type (ie car vs pedestrian)
-                self._publish_marker(
-                    Marker.CUBE, 0, msg.header.stamp,
-                    trans, rotq, [l, w, h],
-                    color)
-                self._publish_marker(
-                    Marker.ARROW, 1, msg.header.stamp,
-                    trans, rotq, [l/2, w/2, h/2],
-                    color)
+                if f.object_type == 'Pedestrian':
+                    self._publish_marker(
+                        Marker.CYLINDER, 0, msg.header.stamp,
+                        trans, rotq, [w, w, h],
+                        color)
+                    self._publish_marker(
+                        Marker.ARROW, 1, msg.header.stamp,
+                        trans, rotq, [w/2, w/2, w/2],
+                        color)
+                else:
+                    self._publish_marker(
+                        Marker.CUBE, 0, msg.header.stamp,
+                        trans, rotq, [l, w, h],
+                        color)
+                    self._publish_marker(
+                        Marker.ARROW, 1, msg.header.stamp,
+                        trans, rotq, [l/2, w/2, h/2],
+                        color)
 
             self._send_transform(trans, rotq, i)
 
@@ -192,8 +203,10 @@ def main():
     timestamp_map = extract_bag_timestamps(bag_file)
     frame_map = generate_frame_map(tracklets)
     BoxSubPub(frame_map, timestamp_map, sphere)
-    subprocess.call(['rosbag','play', bag_file, '-l', '-q'])
 
+    p=subprocess.call(['rosbag','play', bag_file, '-l', '-q'])
+    os.kill(p, signal.SIGTERM)
+    exit(0)
 
 if __name__ == '__main__':
     main()
