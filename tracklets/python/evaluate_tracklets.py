@@ -102,12 +102,10 @@ def intersect_cylinder(cyl_a, cyl_b):
     max_of_min = np.max([zh_a[1], zh_b[1]])
     min_of_max = np.min([zh_a[0], zh_b[0]])
     z_intersection = np.max([0, min_of_max - max_of_min])
-    print('zi', z_intersection)
     if z_intersection == 0:
         return 0.
 
     dist = np.linalg.norm(cyl_a[0:2] - cyl_b[0:2])
-    print('dist', dist)
     if dist >= r_a + r_b:
         # cylinders do not overlap in any way
         return 0.
@@ -115,13 +113,11 @@ def intersect_cylinder(cyl_a, cyl_b):
         # one cylinder fully inside the other (includes coincident)
         # take volume of smaller sphere as intersection
         intersection = np.pi * min(r_a, r_b)**2 * z_intersection
-        print('rdiff', abs(r_a - r_b))
     else:
         def _lens(r, ro, d):
             td = (d**2 + r**2 - ro**2)/(2*d)
             return r**2 * math.acos(td/r) - td * math.sqrt(r**2 - td**2)
         circle_intersection = _lens(r_a, r_b, dist) + _lens(r_b, r_a, dist)
-        print('ci', circle_intersection)
         intersection = circle_intersection * z_intersection
     return intersection
 
