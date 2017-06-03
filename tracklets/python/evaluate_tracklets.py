@@ -467,11 +467,11 @@ def main():
 
     if output_dir is not None:
         with open(os.path.join(output_dir, METRIC_PER_OBJ + '.csv'), 'w') as f:
-            f.write('object_type,iou\n')
+            f.write('object_type,%s\n' % eval_metric)
             [f.write('{0},{1}\n'.format(k, v))
              for k, v in sorted(results_table[METRIC_PER_OBJ].items(), key=lambda x: x[0])]
         with open(os.path.join(output_dir, PR_PER_METRIC + '.csv'), 'w') as f:
-            f.write('iou_threshold,p,r\n')
+            f.write('%s_threshold,p,r\n' % eval_metric)
             [f.write('{0},{1},{2}\n'.format(k, v['precision'], v['recall']))
              for k, v in sorted(results_table[PR_PER_METRIC].items(), key=lambda x: x[0])]
 
