@@ -4,17 +4,19 @@
 
 from __future__ import print_function, division
 from shapely.geometry import Polygon
-from collections import Counter
+from collections import Counter, defaultdict
 import numpy as np
 import argparse
 import os
 import sys
 import yaml
 import math
+import glob
 
 from parse_tracklet import *
 
 VOLUME_METHODS = ['box', 'cylinder', 'sphere']
+CLASS_WEIGHTING = ['volume', 'instance', 'simple', 'none']
 
 
 def lwh_to_box(l, w, h):
@@ -228,7 +230,15 @@ class EvalFrame(object):
         self.gt_obs = []
         self.pred_obs = []
 
-    def score(self, intersection_count, vol_count, pr_at_thresh, method_override='', metric_fn=iou):
+    def score(
+            self,
+            intersection_vol_count,
+            combined_vol_count,
+            gt_vol_count,
+            instance_count,
+            pr_at_thresh,
+            method_override='',
+            metric_fn=iou):
         # Perform IOU/Dice calculations between all gt and predicted obstacle pairings and greedily match those
         # with the largest IOU. Possibly other matching algorithms will work better/be more efficient.
         # NOTE: This is not a tracking oriented matching like MOTA, predicted -> gt affinity context
@@ -246,6 +256,7 @@ class EvalFrame(object):
                     metric_val, intersection_vol = g.intersection_metric(p, method=method, metric_fn=metric_fn)
                     if metric_val > 0:
                         intersections.append((metric_val, intersection_vol, p_idx, g_idx))
+                instance_count[g.object_type] += 1
 
         # Traverse calculated intersections, greedily consume intersections with largest overlap first,
         # summing volumes and marking TP/FP/FN at specific IOU thresholds as we go.
@@ -256,9 +267,11 @@ class EvalFrame(object):
                 fp.remove(p_idx)  # consume the prediction
                 gt_obs, pred_obs = self.gt_obs[g_idx], self.pred_obs[p_idx]
                 #print('Metric: ', metric_val, intersection_vol)
-                intersection_count[gt_obs.object_type] += intersection_vol
+                intersection_vol_count[gt_obs.object_type] += intersection_vol
                 method = get_vol_method(gt_obs.object_type, method_override)
-                vol_count[gt_obs.object_type] += gt_obs.get_vol(method) + pred_obs.get_vol(method)
+                gt_vol = gt_obs.get_vol(method)
+                gt_vol_count[gt_obs.object_type] += gt_vol
+                combined_vol_count[gt_obs.object_type] += gt_vol + pred_obs.get_vol(method)
                 for metric_threshold in pr_at_thresh.keys():
                     if metric_val > metric_threshold:
                         pr_at_thresh[metric_threshold]['TP'] += 1
@@ -273,7 +286,9 @@ class EvalFrame(object):
         for g_idx in fn:
             gt_obs = self.gt_obs[g_idx]
             method = get_vol_method(gt_obs.object_type, method_override)
-            vol_count[gt_obs.object_type] += gt_obs.get_vol(method)
+            gt_vol = gt_obs.get_vol(method)
+            gt_vol_count[gt_obs.object_type] += gt_vol
+            combined_vol_count[gt_obs.object_type] += gt_vol
             for metric_threshold in pr_at_thresh.keys():
                 pr_at_thresh[metric_threshold]['FN'] += 1
 
@@ -281,7 +296,7 @@ class EvalFrame(object):
         for p_idx in fp:
             pred_obs = self.pred_obs[p_idx]
             method = get_vol_method(pred_obs.object_type, method_override)
-            vol_count[pred_obs.object_type] += pred_obs.get_vol(method)
+            combined_vol_count[pred_obs.object_type] += pred_obs.get_vol(method)
             for metric_threshold in pr_at_thresh.keys():
                 pr_at_thresh[metric_threshold]['FP'] += 1
 
@@ -297,59 +312,30 @@ def load_indices(indices_file):
     return indices
 
 
-def main():
-    parser = argparse.ArgumentParser(description='Evaluate two tracklet files.')
-    parser.add_argument('prediction', type=str, nargs='?', default='tracklet_labels.xml',
-        help='Predicted tracklet label filename')
-    parser.add_argument('groundtruth', type=str, nargs='?', default='tracklet_labels_gt.xml',
-        help='Groundtruth tracklet label filename')
-    parser.add_argument('-f', '--filter_indices', type=str, nargs='?', default=None,
-        help='CSV file containing frame indices to include in evaluation. All frames included if argument empty.')
-    parser.add_argument('-e', '--exclude_indices', type=str, nargs='?', default=None,
-        help='CSV file containing frame indices to exclude (takes priority over inclusions) from evaluation.')
-    parser.add_argument('-o', '--outdir', type=str, nargs='?', default=None,
-        help='Output folder')
-    parser.add_argument('-m', '--method', type=str, nargs='?', default='',
-        help='Volume intersection calculation method override. "box", "cylinder", '
-             '"sphere" (default = "", no override)')
-    parser.add_argument('-v', '--eval_metric', type=str, nargs='?', default='iou',
-        help='Eval metric. "iou" or "dice" (default = "iou")')
-    parser.add_argument('-g', dest='override_lwh_with_gt', action='store_true',
-        help='Override predicted lwh values with value from first gt tracklet.')
-    parser.add_argument('-d', dest='debug', action='store_true', help='Debug print enable')
-    parser.set_defaults(debug=False)
-    parser.set_defaults(override_lwh_with_gt=False)
-    args = parser.parse_args()
-    filter_indices_file = args.filter_indices
-    exclude_indices_file = args.exclude_indices
-    output_dir = args.outdir
-    override_lwh_with_gt = args.override_lwh_with_gt
-    eval_metric = args.eval_metric
-    override_volume_method = args.method
-    if override_volume_method:
-        if override_volume_method not in VOLUME_METHODS:
-            print('Warning: Invalid volume method override "%s". Must be one of %s\n'
-                  % (override_volume_method, VOLUME_METHODS))
-            override_volume_method = ''
-        else:
-            print('Overriding volume intersection method with %s' % override_volume_method)
+def process_sequence(
+        seq_files,
+        counters,
+        pr_at_thresh,
+        metric_fn,
+        process_params,
+):
+    override_volume_method = process_params['override_volume_method']
+    override_lwh_with_gt = process_params['override_lwh_with_gt']
 
-    pred_file = args.prediction
-    if not os.path.exists(pred_file):
-        sys.stderr.write('Error: Prediction file %s not found.\n' % pred_file)
-        exit(-1)
+    print('Processing sequence with:')
+    print('\tprediction file: %s' % seq_files['pred_file'])
+    print('\tground-truth file: %s' % seq_files['gt_file'])
+    if 'include_indices_file' in seq_files:
+        print('\tinclude indices file: %s' % seq_files['include_indices_file'])
+    if 'exclude_indices_file' in seq_files:
+        print('\texclude indices file: %s' % seq_files['exclude_indices_file'])
 
-    gt_file = args.groundtruth
-    if not os.path.exists(gt_file):
-        sys.stderr.write('Error: Ground-truth file %s not found.\n' % gt_file)
-        exit(-1)
-
-    pred_tracklets = parse_xml(pred_file)
+    pred_tracklets = parse_xml(seq_files['pred_file'])
     if not pred_tracklets:
         sys.stderr.write('Error: No Tracklets parsed for predictions.\n')
         exit(-1)
 
-    gt_tracklets = parse_xml(gt_file)
+    gt_tracklets = parse_xml(seq_files['gt_file'])
     if not gt_tracklets:
         sys.stderr.write('Error: No Tracklets parsed for ground truth.\n')
         exit(-1)
@@ -361,38 +347,36 @@ def main():
     num_pred_frames = 0
     for p_idx, pred_tracklet in enumerate(pred_tracklets):
         num_pred_frames = max(num_pred_frames, pred_tracklet.first_frame + pred_tracklet.num_frames)
-        # FIXME START TEST HACK
-        if False:
+        if process_params['test_mode']:
             trans_noise = np.random.normal(0, 0.3, pred_tracklet.trans.shape)
             rots_noise = np.random.normal(0, 0.39, pred_tracklet.rots.shape)
             pred_tracklets[p_idx].trans = pred_tracklet.trans + trans_noise
             pred_tracklets[p_idx].rots = pred_tracklet.rots + rots_noise
             pred_tracklets[p_idx].size = pred_tracklet.size + np.random.normal(0, 0.2, pred_tracklet.size.shape)
-        # FIXME END HACK
 
     num_frames = max(num_gt_frames, num_pred_frames)
     if not num_frames:
         print('Error: No frames to evaluate')
         exit(-1)
 
-    if filter_indices_file:
-        if not os.path.exists(filter_indices_file):
+    if 'include_indices_file' in seq_files:
+        if not os.path.exists(seq_files['include_indices_file']):
             sys.stderr.write('Error: Filter indices files specified but does not exist.\n')
             exit(-1)
-        eval_indices = load_indices(filter_indices_file)
+        eval_indices = load_indices(seq_files['include_indices_file'])
         print('Filter file %s loaded with %d frame indices to include for evaluation.' %
-              (filter_indices_file, len(eval_indices)))
+              (seq_files['include_indices_file'], len(eval_indices)))
     else:
         eval_indices = list(range(num_frames))
 
-    if exclude_indices_file:
-        if not os.path.exists(exclude_indices_file):
+    if 'exclude_indices_file' in seq_files:
+        if not os.path.exists(seq_files['exclude_indices_file']):
             sys.stderr.write('Error: Exclude indices files specified but does not exist.\n')
             exit(-1)
-        exclude_indices = set(load_indices(exclude_indices_file))
+        exclude_indices = set(load_indices(seq_files['exclude_indices_file']))
         eval_indices = [x for x in eval_indices if x not in exclude_indices]
         print('Exclude file %s loaded with %d frame indices to exclude from evaluation.' %
-              (exclude_indices_file, len(exclude_indices)))
+              (seq_files['exclude_indices_file'], len(exclude_indices)))
 
     eval_frames = {i: EvalFrame() for i in eval_indices}
 
@@ -418,9 +402,119 @@ def main():
     print('%d ground truth object instances included in evaluation, % s excluded' % (included_gt, excluded_gt))
     print('%d predicted object instances included in evaluation, % s excluded' % (included_pred, excluded_pred))
 
-    metric_thresholds = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8]
-    pr_at_thresh = {k: Counter() for k in metric_thresholds}
+    for frame_idx in eval_indices:
+        #  calc scores
+        eval_frames[frame_idx].score(
+            counters['intersection_volume'],
+            counters['combined_volume'],
+            counters['gt_volume'],
+            counters['gt_instance_count'],
+            pr_at_thresh,
+            method_override=override_volume_method,
+            metric_fn=metric_fn)
 
+
+def main():
+    parser = argparse.ArgumentParser(description='Evaluate two tracklet files.')
+    parser.add_argument('prediction', type=str, nargs='?', default='tracklet_labels.xml',
+        help='Predicted tracklet label filename or folder')
+    parser.add_argument('groundtruth', type=str, nargs='?', default='tracklet_labels_gt.xml',
+        help='Groundtruth tracklet label filename or folder')
+    parser.add_argument('-f', '--include_indices', type=str, nargs='?', default=None,
+        help='CSV file containing frame indices to include in evaluation. All frames included if argument empty.')
+    parser.add_argument('-e', '--exclude_indices', type=str, nargs='?', default=None,
+        help='CSV file containing frame indices to exclude (takes priority over inclusions) from evaluation.')
+    parser.add_argument('-o', '--outdir', type=str, nargs='?', default=None,
+        help='Output folder')
+    parser.add_argument('-m', '--method', type=str, nargs='?', default='',
+        help='Volume intersection calculation method override. "box", "cylinder", '
+             '"sphere" (default = "", no override)')
+    parser.add_argument('-v', '--eval_metric', type=str, nargs='?', default='iou',
+        help='Eval metric. "iou" or "dice" (default = "iou")')
+    parser.add_argument('-w', '--class_weight', type=str, nargs='?', default='instance',
+        help='Weighting method across all classes. "simple", "volume", "instance", or "none" (default="instance")')
+    parser.add_argument('-g', dest='override_lwh_with_gt', action='store_true',
+        help='Override predicted lwh values with value from first gt tracklet.')
+    parser.add_argument('--test', dest='test_mode', action='store_true', help='Test mode enable')
+    parser.add_argument('-d', dest='debug', action='store_true', help='Debug print enable')
+    parser.set_defaults(test_mode=False)
+    parser.set_defaults(debug=False)
+    parser.set_defaults(override_lwh_with_gt=False)
+    args = parser.parse_args()
+    include_indices_path = args.include_indices
+    exclude_indices_path = args.exclude_indices
+    output_dir = args.outdir
+    eval_metric = args.eval_metric
+    class_weighting = args.class_weight
+    if class_weighting not in CLASS_WEIGHTING:
+        print('Error: Invalid class weighting "%s". Must be one of %s\n'
+              % (class_weighting, CLASS_WEIGHTING))
+        exit(-1)
+
+    process_params = dict()
+    process_params['test_mode'] = args.test_mode
+    process_params['override_lwh_with_gt'] = args.override_lwh_with_gt
+    process_params['override_volume_method'] = ''
+    if args.method:
+        if args.method not in VOLUME_METHODS:
+            print('Error: Invalid volume method override "%s". Must be one of %s\n'
+                  % (args.method, VOLUME_METHODS))
+            exit(-1)
+        else:
+            print('Overriding volume intersection method with %s' % args.method)
+            process_params['override_volume_method'] = args.method
+
+    pred_path = args.prediction
+    if not os.path.exists(pred_path):
+        sys.stderr.write('Error: Prediction file %s not found.\n' % pred_path)
+        exit(-1)
+
+    gt_path = args.groundtruth
+    if not os.path.exists(gt_path):
+        sys.stderr.write('Error: Ground-truth file %s not found.\n' % gt_path)
+        exit(-1)
+
+    sequences = []
+    if os.path.isfile(pred_path) and os.path.isfile(gt_path):
+        seq = {'gt_file': gt_path, 'pred_file': pred_path}
+        if include_indices_path and os.path.isfile(include_indices_path):
+            seq['include_indices_file'] = include_indices_path
+        if exclude_indices_path and os.path.isfile(exclude_indices_path):
+            seq['exclude_indices_file'] = exclude_indices_path
+        sequences.append(seq)
+    elif os.path.isdir(pred_path) and os.path.isdir(gt_path):
+        def _f(path):
+            return os.path.splitext(os.path.basename(path))[0]
+        pred_files = {_f(x): x for x in glob.glob(os.path.join(pred_path, '*.xml'))}
+        include_indices_files = {}
+        if include_indices_path and os.path.isdir(include_indices_path):
+            include_indices_files = {_f(x): x for x in glob.glob(os.path.join(include_indices_path, '*.csv'))}
+        exclude_indices_files = {}
+        if exclude_indices_path and os.path.isdir(exclude_indices_path):
+            exclude_indices_files = {_f(x): x for x in glob.glob(os.path.join(exclude_indices_path, '*.csv'))}
+        gt_files = glob.glob(os.path.join(gt_path, '*.xml'))
+        for g in gt_files:
+            pb = _f(g)
+            if pb in pred_files:
+                seq = {'gt_file': g, 'pred_file': pred_files[pb]}
+                if pb in include_indices_files:
+                    seq['include_indices_file'] = include_indices_files[pb]
+                if pb in exclude_indices_files:
+                    seq['exclude_indices_file'] = exclude_indices_files[pb]
+                sequences.append(seq)
+        if len(gt_files) != len(sequences):
+            print('Warning: Only %d of %d ground-truth files matched with predictions.'
+                  % (len(sequences), len(gt_files)))
+
+    else:
+        sys.stderr.write('Error: Ground-truth and predicted paths must both be files or both be folders.\n')
+        exit(-1)
+
+    if not sequences:
+        print('Error: No predicted sequences were found to evaluate.')
+        exit(-1)
+
+    metric_thresholds = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8]
     if eval_metric == 'dice':
         metric_fn = dice
         METRIC_PER_OBJ = 'dice_score_per_obj'
@@ -430,30 +524,43 @@ def main():
         METRIC_PER_OBJ = 'iou_per_obj'
         PR_PER_METRIC = 'pr_per_iou'
 
-    intersection_count = Counter()
-    volume_count = Counter()
-    for frame_idx in eval_indices:
-        #  calc scores
-        eval_frames[frame_idx].score(
-            intersection_count,
-            volume_count,
-            pr_at_thresh,
-            method_override=override_volume_method,
-            metric_fn=metric_fn)
+    pr_at_thresh = {k: Counter() for k in metric_thresholds}
+    counters = defaultdict(Counter)
+    for s in sequences:
+        process_sequence(s, counters, pr_at_thresh, metric_fn, process_params)
 
+    # Class weighting
+    #  * '' or 'none': calculate the metric across all class volumes (large volume objects dominate small)
+    #  * 'simple': simple mean of per class metric values
+    #  * 'instance': ground-truth instance count weighted mean of per class metric values
+    #  * 'volume': ground-truth volume weighted mean of per class metric values
+    metric_value_sum = 0.0
+    metric_weight_sum = 0.0
+    combined_vol_sum = 0.0
+    intersection_vol_sum = 0.0
     results_table = {METRIC_PER_OBJ: {}, PR_PER_METRIC: {}}
-
-    # FIXME determine how we want to combined IOU scores between object classes:
-    # - combine volumes across all classes before ratio (vehicles dominate pedestrians)
-    # - simple mean of per class ratio (current)
-    # - weighted mean of per class ratio
-    metric_sum = 0.0
-    for k in intersection_count.keys():
-        metric_val = metric_fn(volume_count[k], 0., intersection_count[k])
+    for k in counters['combined_volume'].keys():
+        combined_vol_sum += counters['combined_volume'][k]
+        intersection_vol_sum += counters['intersection_volume'][k]
+        metric_val = metric_fn(counters['combined_volume'][k], 0., counters['intersection_volume'][k])
         results_table[METRIC_PER_OBJ][k] = float(metric_val)
-        metric_sum += metric_val
-    results_table[METRIC_PER_OBJ]['All'] = \
-        float(metric_sum / len(intersection_count)) if len(intersection_count) else 0.
+        if class_weighting == 'instance':
+            metric_weight = counters['gt_instance_count'][k]
+        elif class_weighting == 'volume':
+            metric_weight = counters['gt_volume'][k]
+        else:
+            metric_weight = 1.0  # for 'simple' or 'none'
+        metric_value_sum += metric_val * metric_weight
+        metric_weight_sum += metric_weight
+
+    if class_weighting and class_weighting != "none":
+        # class weighting is enabled, use the summed metric calculated for appropriate weighting method
+        all_metric = metric_value_sum / metric_weight_sum if metric_weight_sum else 0.
+    else:
+        # no weighting is enabled, compute the metric over the volumes summed across all classes
+        all_metric = metric_fn(combined_vol_sum, 0., intersection_vol_sum)
+    results_table[METRIC_PER_OBJ]['All'] = float(all_metric)
+
 
     # FIXME add support for per class P/R scores?
     # NOTE P/R scores need further analysis given their use with the greedy pred - gt matching
