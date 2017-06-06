@@ -19,7 +19,7 @@ For example, if your dataset bags are in /data/bags/*.bag, and you'd like the ou
 
     ./run-bag_to_kitti.sh -i /data/bags -o /output
 
-The same as above, but you want to suppress image output:
+The same as above, but you want to suppress image output and only process messages:
 
     ./run-bag_to_kitti.sh -i /data/bags -o /output -- -m
     
@@ -29,9 +29,13 @@ To run bag_to_kitti.py locally, the same -i -o arguments can be used and additio
     
 #### Other bag_to_kitti.py command options
 
-(-t, --ts_src) Timestamp source selection. The default bag_to_kitti behaviour uses the ROS msg header timestamp (publish) for all timing and synchronization. For Dataset 2, the obstacle vehicle were recorded on node with different timebase and not corrected. It is better to use the bag record times for obstacle data. Use the command line '-t obs_rec' to enable this.
+(-t, --ts_src) Timestamp source selection. The default bag_to_kitti behaviour uses the ROS msg header timestamp (publish) for all timing and synchronization. For Round 1 - Dataset 2, the obstacle vehicle were recorded on node with different timebase and not corrected. It is better to use the bag record times for obstacle data. Use the command line '-t obs_rec' to enable this. This argument should not be necessary with Round 2 data.
 
-(-c, --correct) RTK coordinate correction. This option enables an algorithm that attempts to determine the ground plane from combination of all RTK unit measurements and corrects by leveling that plane. This works well in many datasets, especially those with reasonable X and Y spread and both vehicles driving on the same slope, but not all. Use '-c plane' to enable. Other correction techniques may be added in the future.
+(-c, --correct) RTK coordinate correction. This option enables an algorithm that attempts to determine the ground plane from combination of all RTK unit measurements and corrects by leveling that plane. This works well in many datasets, especially those with reasonable X and Y spread and both vehicles driving on the same slope, but not all. Use '-c plane' to enable. Visualize and verify results on a per capture basis.
+
+(--yaw_err, --pitch_err) Specify a specific yaw or pitch error correction to compensate for RTK or Velodyne mounting error. For Round 1 data, yaw error of 0.6 to 1.0 and pitch error of -0.8 to -1.0 seems to improve bbox alignment. For Round 2 data similar yaw errors in the 0.6 to 1.0 help, but a lesser pitch adjustment in the 0.0 to -0.3 range seems appropriate. As with correction, visualize and verify to check if results are improved on your data.
+
+(-u) Enable unique paths for bag set output folders. With this enabled, the output folders include the relative path between the input folder and bag file prefixed to the bag filename. 
 
 ### evaluate_tracklets.py -- Evaluate predicted Tracklet against ground truth
 
@@ -41,6 +45,16 @@ Usage is straightforward. Run the script as per
 
     python evaluate_tracklets.py predicted_tracklet.xml ground_truth_tracklet.xml -o /output/metrics
     
+If evaluating multiple tracklet XML files together is desired, use folder paths instead of file paths for the arguments. The base filename for each ground-truth and predicted tracklet must match and have an '.xml' extension. 
+
+For example, in the command below,
+
+    python evaluate_tracklets.py predicted_folder/ ground_truth_folder/ -o /output/metrics
+
+If 'ground_truth_folder/' contains bmw.xml and ford.xml, the same file names should exist in 'predicted_folder/'
+
+The index inclusion/exclusion (-f, -e) arguments that are used for filtering specific frame indices or performing public/private score splits must also be specified in filename or folder form, matching the form used for the prediction/gt. Use '.csv' as the extension and match the ground/truth prediced basenames in the multi-file case.
+
 If you don't want metrics output as csv files omit the -o argument.
 
 ## Metrics and Scoring
