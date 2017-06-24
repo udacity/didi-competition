@@ -256,7 +256,6 @@ class EvalFrame(object):
                     metric_val, intersection_vol = g.intersection_metric(p, method=method, metric_fn=metric_fn)
                     if metric_val > 0:
                         intersections.append((metric_val, intersection_vol, p_idx, g_idx))
-                instance_count[g.object_type] += 1
 
         # Traverse calculated intersections, greedily consume intersections with largest overlap first,
         # summing volumes and marking TP/FP/FN at specific IOU thresholds as we go.
@@ -272,6 +271,7 @@ class EvalFrame(object):
                 gt_vol = gt_obs.get_vol(method)
                 gt_vol_count[gt_obs.object_type] += gt_vol
                 combined_vol_count[gt_obs.object_type] += gt_vol + pred_obs.get_vol(method)
+                instance_count[gt_obs.object_type] += 1
                 for metric_threshold in pr_at_thresh.keys():
                     if metric_val > metric_threshold:
                         pr_at_thresh[metric_threshold]['TP'] += 1
@@ -289,6 +289,7 @@ class EvalFrame(object):
             gt_vol = gt_obs.get_vol(method)
             gt_vol_count[gt_obs.object_type] += gt_vol
             combined_vol_count[gt_obs.object_type] += gt_vol
+            instance_count[gt_obs.object_type] += 1
             for metric_threshold in pr_at_thresh.keys():
                 pr_at_thresh[metric_threshold]['FN'] += 1
 
@@ -323,17 +324,21 @@ def process_sequence(
     override_lwh_with_gt = process_params['override_lwh_with_gt']
 
     print('Processing sequence with:')
-    print('\tprediction file: %s' % seq_files['pred_file'])
     print('\tground-truth file: %s' % seq_files['gt_file'])
+    if 'pred_file' in seq_files:
+        print('\tprediction file: %s' % seq_files['pred_file'])
     if 'include_indices_file' in seq_files:
         print('\tinclude indices file: %s' % seq_files['include_indices_file'])
     if 'exclude_indices_file' in seq_files:
         print('\texclude indices file: %s' % seq_files['exclude_indices_file'])
 
-    pred_tracklets = parse_xml(seq_files['pred_file'])
-    if not pred_tracklets:
-        sys.stderr.write('Error: No Tracklets parsed for predictions.\n')
-        exit(-1)
+    if 'pred_file' in seq_files:
+        pred_tracklets = parse_xml(seq_files['pred_file'])
+        if not pred_tracklets:
+            sys.stderr.write('Error: No Tracklets parsed for predictions.\n')
+            exit(-1)
+    else:
+        pred_tracklets = []
 
     gt_tracklets = parse_xml(seq_files['gt_file'])
     if not gt_tracklets:
@@ -495,16 +500,18 @@ def main():
         gt_files = glob.glob(os.path.join(gt_path, '*.xml'))
         for g in gt_files:
             pb = _f(g)
+            seq = {'gt_file': g}
             if pb in pred_files:
-                seq = {'gt_file': g, 'pred_file': pred_files[pb]}
-                if pb in include_indices_files:
-                    seq['include_indices_file'] = include_indices_files[pb]
-                if pb in exclude_indices_files:
-                    seq['exclude_indices_file'] = exclude_indices_files[pb]
-                sequences.append(seq)
-        if len(gt_files) != len(sequences):
+                seq['pred_file'] = pred_files[pb]
+            if pb in include_indices_files:
+                seq['include_indices_file'] = include_indices_files[pb]
+            if pb in exclude_indices_files:
+                seq['exclude_indices_file'] = exclude_indices_files[pb]
+            sequences.append(seq)
+        if len(gt_files) != len(pred_files):
             print('Warning: Only %d of %d ground-truth files matched with predictions.'
-                  % (len(sequences), len(gt_files)))
+                  % (len(pred_files), len(gt_files)))
+        assert len(gt_files) == len(sequences)
 
     else:
         sys.stderr.write('Error: Ground-truth and predicted paths must both be files or both be folders.\n')
