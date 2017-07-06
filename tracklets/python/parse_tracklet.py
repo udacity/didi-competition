@@ -158,10 +158,19 @@ def parse_xml(tracklet_file):
                     new_track.object_type = info.text
                 elif info.tag == 'h':
                     new_track.size[0] = float(info.text)
+                    if new_track.size[0] < 0:
+                        print('Warning: Negative height found while parsing tracklet. Zeroing.')
+                        new_track.size[0] = 0.
                 elif info.tag == 'w':
                     new_track.size[1] = float(info.text)
+                    if new_track.size[1] < 0:
+                        print('Warning: Negative width found while parsing tracklet. Zeroing.')
+                        new_track.size[1] = 0.
                 elif info.tag == 'l':
                     new_track.size[2] = float(info.text)
+                    if new_track.size[2] < 0:
+                        print('Warning: Negative length found while parsing tracklet. Zeroing.')
+                        new_track.size[2] = 0.
                 elif info.tag == 'first_frame':
                     new_track.first_frame = int(info.text)
                 elif info.tag == 'poses':

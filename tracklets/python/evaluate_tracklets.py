@@ -138,7 +138,7 @@ class Obs(object):
     def __init__(self, tracklet_idx, object_type, size, position, rotation):
         self.tracklet_idx = tracklet_idx
         self.object_type = object_type
-        self.h, self.w, self.l = size
+        self.h, self.w, self.l = np.clip(size, a_min=0., a_max=None)
         self.position = position
         self.yaw = rotation[2]
         self._oriented_bbox = None  # for caching
